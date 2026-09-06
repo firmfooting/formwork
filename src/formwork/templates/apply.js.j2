@@ -1,0 +1,60 @@
+{# src/formwork/templates/apply.js.j2 — run from any page of the TARGET site: creates the page, writes the embedded canvas via REST, verifies by read-back. #}
+{# name, payload_json and state arrive as READY JS literals (JSON-embedded in Python, generator.generate_apply_script); nothing here quotes or escapes. #}
+// formwork apply v{{ version }} — run from any page of the TARGET site.
+// Creates the page, writes the embedded canvas via REST, verifies.
+{% include "_prelude.js.j2" %}
+
+  const PAGE_NAME = {{ name }};
+  const PAYLOAD = JSON.parse({{ payload_json }});
+  const PROMOTED_STATE = {{ state }};
+
+  // 1. Create the page through the sitepages API, then set item fields.
+  const created = await createSitePage(PAGE_NAME);
+  await created.setFields({ PromotedState: PROMOTED_STATE });
+
+  // 2. Write the canvas with MERGE + etag concurrency control.
+  const itemRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!itemRes.ok) throw await failed("read item", itemRes);
+  const etag = (await itemRes.json()).d.__metadata.etag;
+
+  const mergeRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")",
+    {
+      method: "POST",
+      headers: {
+        Accept: VERBOSE,
+        "Content-Type": "application/json;odata=verbose",
+        "X-RequestDigest": await getDigest(),
+        "X-HTTP-Method": "MERGE",
+        "If-Match": etag,
+      },
+      body: JSON.stringify({
+        __metadata: { type: "SP.Data.SitePagesItem" },
+        CanvasContent1: PAYLOAD.canvas,
+        Title: PAYLOAD.title,
+      }),
+    }
+  );
+  if (!mergeRes.ok) throw await failed("canvas write", mergeRes);
+
+  // 4. Verify: read back what SharePoint actually stored.
+  const verifyRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")?$select=CanvasContent1,Title",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!verifyRes.ok) throw await failed("verify read", verifyRes);
+  const stored = (await verifyRes.json()).d;
+  const storedLen = (stored.CanvasContent1 || "").length;
+  const byteExact = stored.CanvasContent1 === PAYLOAD.canvas;
+  console.log("[formwork] page created:",
+    location.origin + created.url,
+    "| canvas stored:", storedLen, "chars",
+    "| byte-exact:", byteExact);
+  if (!byteExact) {
+    throw new Error("canvas mismatch: sent " + PAYLOAD.canvas.length + ", stored " + storedLen);
+  }
+  console.log("[formwork] verify OK — reload the new page to inspect it.");
+})().catch(err => { console.error("[formwork] apply failed:", err); });

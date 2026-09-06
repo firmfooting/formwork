@@ -112,6 +112,43 @@ class TestDiscoverScript:
         # recycle happens before download: no residue if the download stalls
         assert script.index("recycle") < script.index("URL.createObjectURL")
 
+    def test_script_places_two_known_text_controls(self):
+        # A text block is not a web part: controlType 4, no webPartId, the
+        # HTML as inner content of a data-sp-rte child (the shape PnP sends).
+        script = generate_discover_script()
+        assert script.count("controlType: 4") == 1
+        assert "editorType: \"CKEditor\"" in script
+        assert "'<div data-sp-rte=\"\">' + t.html + '</div></div>'" in script
+        # Two samples, with the constructs the compiler's converter emits:
+        # a heading, bold, a link, a colour span, strong/em and a list.
+        start = script.index("const TEXT_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        for construct in ("<h2>", "<b>", '<a href="https://example.com/">', "color:#a4262c;",
+                          "<strong>", "<em>", "<ul><li>"):
+            assert construct in samples, construct
+        # Their control data goes through the same attribute escaper as a
+        # web part's, and the blocks are written before the scratch save.
+        assert "esc(JSON.stringify(t.cd))" in script
+        assert script.index("data-sp-rte") < script.index('failed("scratch save"')
+
+    def test_script_reads_back_the_persisted_text_controls_verbatim(self):
+        script = generate_discover_script()
+        # Split on the same boundary canvas.py parses by; decode through
+        # the browser's parser; keep the raw block, not a re-serialisation.
+        assert "const CONTROL_OPEN = '<div data-sp-canvascontrol=\"\"';" in script
+        assert 'new DOMParser().parseFromString(block, "text/html")' in script
+        assert "cd.controlType === 4" in script
+        assert "textPersisted.push({ id: cd.id, controlData: cd, canvas: block });" in script
+        # Read back before recycling; carried under the additive key.
+        assert script.index("textPersisted.push") < script.index('/recycle"')
+        assert re.search(
+            r"textControls: \{\n\s*requested: textRequested,\n\s*persisted: textPersisted,",
+            script,
+        )
+        assert 'schema: "formwork.discovery/v1"' in script  # still v1: additive
+        # The pending measurement is named where the shape is assumed.
+        assert "TODO(measure, 2026-09-06)" in script
+
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")
 class TestApplyScript:
@@ -238,6 +275,28 @@ class TestTransportFacts:
         assert "getbytitle('\" + odataName(title) + \"')" in script
         assert "'Site Pages'" not in script
         assert 'listByTitle("Site Pages")' in script
+
+
+#: The package the templates live in.
+PACKAGE = pathlib.Path(__file__).parent.parent / "src" / "formwork"
+
+
+def test_site_pages_title_is_named_only_by_the_display_layer():
+    """One source of truth for the list title: the Jinja templates emit it,
+    and exactly one of them (the shared prelude) names it. No Python module
+    carries the literal, so the display layer cannot drift from the code."""
+    python_hits = sorted(
+        str(path.relative_to(PACKAGE))
+        for path in PACKAGE.rglob("*.py")
+        if "Site Pages" in path.read_text(encoding="utf-8")
+    )
+    assert python_hits == [], python_hits
+    emitters = sorted(
+        path.name
+        for path in (PACKAGE / "templates").glob("*.j2")
+        if 'listByTitle("Site Pages")' in path.read_text(encoding="utf-8")
+    )
+    assert emitters == ["_prelude.js.j2"]
 
 
 def test_extract_filter_literal_doubles_apostrophes():
