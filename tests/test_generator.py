@@ -1,7 +1,22 @@
-"""Tests for the paste-in script generators."""
+"""Tests for the paste-in script generators.
+
+Golden files
+------------
+``tests/fixtures/expected/{extract,discover,apply}.js`` hold the emitted
+scripts byte for byte (apply with its default arguments). Any generator change
+fails the golden tests until the fixtures are deliberately regenerated::
+
+    .venv/bin/python tests/test_generator.py
+
+That runs the same generator calls the golden tests do, so the two cannot
+drift. Review the resulting diff like code: it is the paste-in the operator
+will run. Regeneration is deliberately a separate, explicit act rather than a
+flag on the test run; the friction is the point.
+"""
 
 import json
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -13,6 +28,27 @@ from formwork.generator import (
 )
 
 EXPECTED_SCHEMA = "formwork.bundle/v1"
+
+#: Committed golden files: the emitted scripts, byte for byte.
+EXPECTED = pathlib.Path(__file__).parent / "fixtures" / "expected"
+
+#: Every generated script, by the name of its golden file.
+GENERATORS = {
+    "extract": generate_extract_script,
+    "discover": generate_discover_script,
+    "apply": generate_apply_script,
+}
+
+
+def write_golden(path: pathlib.Path, text: str) -> None:
+    """Explicit newline: the default emits CRLF on Windows, so the file reads
+    as modified locally while producing an empty diff."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+#: One backslash, composed: the pins below must survive any display or
+#: transport layer that rewrites escape sequences in source text.
+BS = chr(92)
 
 
 def node_available() -> bool:
@@ -76,6 +112,140 @@ class TestDiscoverScript:
         # recycle happens before download: no residue if the download stalls
         assert script.index("recycle") < script.index("URL.createObjectURL")
 
+    def test_script_places_two_known_text_controls(self):
+        # A text block is not a web part: controlType 4, no webPartId, the
+        # HTML as inner content of a data-sp-rte child (the shape PnP sends).
+        # One builder for every text control on the page (the M1 samples,
+        # the M3 style samples, the page-model marker): one literal.
+        script = generate_discover_script()
+        assert script.count("controlType: 4") == 1
+        assert "editorType: \"CKEditor\"" in script
+        assert "'<div data-sp-rte=\"\">' + html + '</div></div>'" in script
+        # Two samples, with the constructs the compiler's converter emits:
+        # a heading, bold, a link, a colour span, strong/em and a list.
+        start = script.index("const TEXT_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        for construct in ("<h2>", "<b>", '<a href="https://example.com/">', "color:#a4262c;",
+                          "<strong>", "<em>", "<ul><li>"):
+            assert construct in samples, construct
+        # Their control data goes through the same attribute escaper as a
+        # web part's, and the blocks are written before the scratch save.
+        assert "esc(JSON.stringify(cd))" in script
+        assert "textBlock(t.cd, t.html)" in script
+        assert script.index("data-sp-rte") < script.index('failed("scratch save"')
+        # The measured result is stated where the shape is sent (784d52b).
+        assert "is rewritten as" in script and "'&#58;'" in script
+
+    def test_script_reads_back_the_persisted_text_controls_verbatim(self):
+        script = generate_discover_script()
+        # Split on the same boundary canvas.py parses by; decode through
+        # the browser's parser; keep the raw block, not a re-serialisation.
+        assert "const CONTROL_OPEN = '<div data-sp-canvascontrol=\"\"';" in script
+        assert 'new DOMParser().parseFromString(block, "text/html")' in script
+        assert "cd.controlType === 4" in script
+        assert "textPersisted.push({ id: cd.id, controlData: cd, canvas: block });" in script
+        # Read back before recycling; carried under the additive key.
+        assert script.index("textPersisted.push") < script.index('/recycle"')
+        assert re.search(
+            r"textControls: \{\n\s*requested: textRequested,\n\s*persisted: textPersisted,",
+            script,
+        )
+        assert 'schema: "formwork.discovery/v1"' in script  # still v1: additive
+        # The pending measurement is named where the shape is assumed.
+        assert "TODO(measure, 2026-09-06)" in script
+        # The M1 persisted list is the M1 samples only: the M3 style samples
+        # are text controls too and must not leak into the compile gate.
+        assert "cd.controlType === 4 && textIds.has(cd.id)" in script
+
+    def test_script_places_styled_text_samples_under_an_additive_key(self):
+        """M3 (a): styled HTML, one text control per sample, requested and
+        persisted paired by control id under styling.styleSamples."""
+        script = generate_discover_script()
+        start = script.index("const STYLE_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        # The style attribute (colour, size, background, a styled link, a
+        # block alignment), a <mark>, and the editor's own class idiom.
+        for construct in (
+            'style="color:#a4262c;"',
+            'style="font-size:24px;"',
+            'style="background-color:#fff100;"',
+            '<a href="https://example.com/" style="color:#0078d4;text-decoration:underline;">',
+            "<mark>marked</mark>",
+            '<p style="text-align:center;">',
+            'class="fontColorRed"',
+            'class="fontSizeLarge"',
+            'class="highlightColorYellow"',
+        ):
+            assert construct in samples, construct
+        assert samples.count("label:") == 7
+        # Own id range, own section, the shared text-control builder, and
+        # the same requested/persisted pairing the M1 samples use.
+        assert '"00000000-0000-0000-0002-"' in script
+        assert "textBlock(s.cd, s.html)" in script
+        assert "const stylePersisted = persistedFor(storedBlocks, styleRequested);" in script
+        assert re.search(
+            r"styleSamples: \{\n\s*requested: styleRequested,\n\s*persisted: stylePersisted,",
+            script,
+        )
+        assert script.index("const stylePersisted") < script.index('/recycle"')
+        # The pending measurement is named where the samples are declared.
+        assert script.index("TODO(measure, 2026-09-06)") < start
+
+    def test_script_places_section_style_variants_one_per_section(self):
+        """M3 (b, c): section-level styling rides on each control in the
+        section; one web-part control per variant, each in its own section."""
+        script = generate_discover_script()
+        start = script.index("const SECTION_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        for construct in (
+            "zoneEmphasis: 2",  # PnP's Soft emphasis, the known shape
+            'zoneEmphasis: 3, formworkProbe: "unknown key"',  # unknown-key survival
+            "zoneGroupMetadata: {",  # collapsible section
+            "sectionFactor: 0",  # full width
+            "layoutIndex: 2, isLayoutReflowOnTop: false",  # vertical section
+        ):
+            assert construct in samples, construct
+        assert samples.count("label:") == 5
+        # Web-part controls (the brief's (b)), on the first placeable part,
+        # each variant a section of its own, requested/persisted by id.
+        assert "webPartId: placeable[0].Id" in script
+        assert "emphasis: s.emphasis" in script
+        assert '"00000000-0000-0000-0003-"' in script
+        assert "const block = webPartBlock(s.cd);" in script
+        assert re.search(
+            r"sectionSamples: \{\n\s*requested: sectionRequested,\n\s*persisted: sectionPersisted,",
+            script,
+        )
+        # The refusal that guards placeable[0] names the call that came back empty.
+        assert "returned no placeable web part (ComponentType 1)" in script
+
+    def test_script_measures_the_page_model_save_path_without_failing_the_run(self):
+        """M3 second readback: the same canvas through SavePageAsDraft, with a
+        marker control so the readback shows whether the body was applied.
+        A refusal is recorded (status and server reason), never thrown."""
+        script = generate_discover_script()
+        assert 'API("sitepages/pages(" + scratchId + ")/SavePageAsDraft")' in script
+        # After the MERGE readback, before the recycle.
+        merge_readback = script.index('failed("scratch read back"')
+        assert merge_readback < script.index("SavePageAsDraft") < script.index('/recycle"')
+        # Non-fatal, with the server's reason surfaced through spError.
+        assert "pageModelSave.reason = spError(" in script
+        assert "} catch (err) {\n    pageModelSave.reason = bounded(err);" in script
+        # The marker and the two verdicts a reader needs before trusting it.
+        assert 'const MARKER_ID = "00000000-0000-0000-0004-000000000001";' in script
+        assert "pageModelSave.bodyApplied = after.some(b => b.id === MARKER_ID);" in script
+        assert "kept.canvas === before.get(id)" in script
+        assert "pageModelSave: pageModelSave," in script
+
+    def test_script_names_what_it_did_not_measure(self):
+        """The findings that are structural rather than behavioural ('cannot
+        be set via a page save') travel with the document, dated by the run."""
+        script = generate_discover_script()
+        start = script.index("unmeasured: [")
+        block = script[start : script.index("],", start)]
+        for topic in ("theme", "section-background", "section-spacing", "rendering"):
+            assert f'topic: "{topic}"' in block, topic
+
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")
 class TestApplyScript:
@@ -112,3 +282,147 @@ class TestApplyScript:
         script = generate_apply_script(page_name="X", canvas_payload='{"k":1}')
         assert '"X"' in script
         assert json.dumps('{"k":1}') in script  # JSON-embedded, quotes escaped
+
+
+@pytest.mark.parametrize("name", sorted(GENERATORS))
+class TestTransportFacts:
+    """Transport facts ported from dbml-sharepoint v0.4.0 (read 2026-09-06).
+
+    One pin per fact, on every generated script, so the prelude cannot lose a
+    fact without a test going red. Each names the partial the fact came from;
+    the prelude comment in generator.py carries the same citation.
+    """
+
+    def test_throttle_is_detected_on_the_final_url_not_the_status(self, name):
+        # A throttled browser session is redirected to the throttling page,
+        # which arrives as 406 because the script asked for JSON. Detection
+        # keys on the final URL (dbml-sharepoint _http.js.j2:36-44), and one
+        # gate holds every lane (_http.js.j2:45-63). Pins are composed with
+        # BS (one backslash) so no transport layer can rewrite escapes.
+        script = GENERATORS[name]()
+        throttle_re = (
+            "/" + BS + "/_layouts" + BS + "/15" + BS + "/throttle"
+            + BS + ".htm(" + BS + "?|$)/i"
+        )
+        assert throttle_re in script
+        # `||` here, not `&&`: a throttled browser session arrives as 406
+        # from the redirect, not 429/503. Pin the expression across both
+        # lines so `||` -> `&&` cannot slip through (review P2-2).
+        detection = re.search(
+            "res" + BS + ".status === 429 [|][|] res" + BS + ".status === 503"
+            + BS + "s* [|][|] " + BS + "s*THROTTLE_PAGE" + BS + ".test"
+            + BS + "(res" + BS + ".url",
+            script,
+        )
+        assert detection, "throttle detection must key on the final URL"
+        assert "Retry-After" in script
+        # Pin the call sites with their await: the bare definitions would
+        # otherwise satisfy the pin while the calls were deleted (P2-2).
+        assert "await passThrottleGate();" in script
+        assert "await holdEveryLane(wait);" in script
+        # Every request goes out through fetchWithRetry: the one bare fetch()
+        # is the wrapper's own call.
+        assert script.count("await fetch(") == 1
+        assert "await fetchWithRetry(" in script
+
+    def test_non_ok_responses_surface_the_server_reason(self, name):
+        # error.message.value is the server's reason; a bare status left a
+        # blocked run undiagnosable (dbml-sharepoint _http.js.j2:25-34, live
+        # finding 2026-07-24).
+        script = GENERATORS[name]()
+        assert "?.error?.message?.value" in script
+        # No throw is left carrying only the status.
+        assert not re.search(r'-> " \+ \w+\.status\)', script)
+        # Every non-OK branch raises through failed(), which shapes the body
+        # with spError, or shapes it with spError directly (the digest).
+        checks = list(re.finditer(r"if \(!\w+\.ok\)", script))
+        assert len(checks) >= 6, "the pin is meaningless if nothing is checked"
+        for check in checks:
+            window = script[check.end() : check.end() + 200]
+            assert "failed(" in window or "spError(" in window, window
+
+    def test_contextinfo_parse_is_guarded(self, name):
+        # The blind .d.GetContextWebInformation.FormDigestValue chain is what
+        # reported dbml-sharepoint #282 as a TypeError in place of the
+        # server's reason (dbml-sharepoint _digest_cached.js.j2:9-42).
+        script = GENERATORS[name]()
+        assert not re.search(r"\)\s*\.d\s*\.GetContextWebInformation", script)
+        assert "?.d?.GetContextWebInformation" in script
+        assert "contextinfo (request digest) failed: " in script
+        for guard in (
+            "no response (",
+            "with an unreadable body (",
+            "carried no GetContextWebInformation",
+            "carried no usable FormDigestValue",
+        ):
+            assert guard in script, guard
+        # Still POSTed (GET -> 405), and parsed in exactly one place.
+        assert re.search(r'API\("contextinfo"\), \{\n\s*method: "POST"', script)
+        assert script.count("?.d?.GetContextWebInformation") == 1
+
+    def test_list_titles_are_odata_quoted(self, name):
+        # getbytitle('...') takes an OData literal: an embedded apostrophe is
+        # doubled, then the whole is URI-encoded (dbml-sharepoint
+        # _site_guard.js.j2:24-27).
+        script = GENERATORS[name]()
+        assert "const odataLiteral = (s) => String(s).replace(/'/g, \"''\");" in script
+        assert "const odataName = (name) => encodeURIComponent(odataLiteral(name));" in script
+        # The only getbytitle left is the helper; every list URL goes through it.
+        assert script.count("getbytitle(") == 1
+        assert "getbytitle('\" + odataName(title) + \"')" in script
+        assert "'Site Pages'" not in script
+        assert 'listByTitle("Site Pages")' in script
+
+
+#: The package the templates live in.
+PACKAGE = pathlib.Path(__file__).parent.parent / "src" / "formwork"
+
+
+def test_site_pages_title_is_named_only_by_the_display_layer():
+    """One source of truth for the list title: the Jinja templates emit it,
+    and exactly one of them (the shared prelude) names it. No Python module
+    carries the literal, so the display layer cannot drift from the code."""
+    python_hits = sorted(
+        str(path.relative_to(PACKAGE))
+        for path in PACKAGE.rglob("*.py")
+        if "Site Pages" in path.read_text(encoding="utf-8")
+    )
+    assert python_hits == [], python_hits
+    emitters = sorted(
+        path.name
+        for path in (PACKAGE / "templates").glob("*.j2")
+        if 'listByTitle("Site Pages")' in path.read_text(encoding="utf-8")
+    )
+    assert emitters == ["_prelude.js.j2"]
+
+
+def test_extract_filter_literal_doubles_apostrophes():
+    # The same OData rule applies to the $filter literal the extract script
+    # builds from the page's file name (a page named "Bob's page.aspx" is
+    # legal). Doubling only: the whole filter is URI-encoded once, after.
+    script = generate_extract_script()
+    assert "\"FileLeafRef eq '\" + odataLiteral(fileName) + \"'\"" in script
+
+
+@pytest.mark.parametrize("name", sorted(GENERATORS))
+def test_script_matches_golden(name):
+    """Golden-file regression: each generated script must match its committed
+    fixture byte for byte. See the module docstring for the regeneration
+    command."""
+    golden_path = EXPECTED / f"{name}.js"
+    assert golden_path.exists(), f"golden file missing: {golden_path}"
+    assert GENERATORS[name]() == golden_path.read_text(encoding="utf-8"), (
+        f"the {name} script output has changed. If the change is intentional, "
+        "regenerate the golden files (see the module docstring for the command) "
+        "and review the diff."
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # Regenerate the goldens. Deliberately not a pytest flag: see
+    # test_script_matches_golden. Uses the SAME generator calls the test does.
+    EXPECTED.mkdir(parents=True, exist_ok=True)
+    for _name, _generate in GENERATORS.items():
+        _target = EXPECTED / f"{_name}.js"
+        write_golden(_target, _generate())
+        print(f"wrote {_target}")

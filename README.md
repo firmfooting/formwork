@@ -61,9 +61,24 @@ creating pages from nothing.
    any site: it enumerates every placeable component via
    `GetClientSideWebParts` (73 on a stock team site, 285 including hidden and
    extension components), creates a scratch page, places one control per
-   component across one/two/three-column sections, saves, reads back what
-   SharePoint persisted, recycles the scratch page, and downloads
-   `formwork-discovery.json` as the site's component catalogue.
+   component across one/two/three-column sections plus two text controls
+   with known HTML in a fourth section, saves, reads back what SharePoint
+   persisted (the text controls verbatim, under `textControls`), recycles
+   the scratch page, and downloads `formwork-discovery.json` as the site's
+   component catalogue.
+
+   The same run measures styling, under an additive `styling` key: seven
+   text controls carrying styled HTML (colour, font size, background, a
+   styled link, `<mark>`, block alignment, SharePoint's own RTE classes),
+   five one-control sections each carrying one section-level variant
+   (`zoneEmphasis` 2 and 3 with an unknown key, collapsible
+   `zoneGroupMetadata`, full-width `sectionFactor` 0, vertical
+   `layoutIndex` 2), and a second save through the page model
+   (`SavePageAsDraft`) with a marker control, so the document says whether
+   that path applied the body or ignored it. Each sample is recorded as
+   requested and as persisted; the `styling.unmeasured` list names what the
+   run cannot settle (theme, section background, section spacing,
+   rendering) and why.
 
 2. **Declare** — write the page you want:
 
@@ -73,19 +88,47 @@ creating pages from nothing.
      - type: two-thirds
        parts:
          - component: NewsWebPart
-         - component: QuickLinksWebPart
+         - text: |
+             ## Welcome
+             The **team** page. See the [handbook](/sites/T/SitePages/Handbook.aspx).
            column: 2
      - type: one
        parts:
          - component: EventsWebPart
+         - text: "<p>Raw <em>HTML</em> is fine too.</p>"
    ```
 
-3. **Compile** — `formwork compile page.yaml formwork-discovery.json` resolves
+   A part is either a `component` (by alias or title, with optional
+   `properties` and `displayTitle`) or a `text` block. Text is HTML when it
+   starts with `<` or carries `format: html`, otherwise a small markdown
+   subset: `#` to `####` headings, paragraphs, `-`/`*` and `1.` lists,
+   `**bold**`, `*italic*`/`_italic_`, and `[text](url)` links (http, https,
+   mailto or relative). Anything else — blockquotes, tables, code, images,
+   rules, nested lists, raw tags — is refused with the line number rather
+   than guessed at. The HTML must not carry `data-sp-` attributes.
+
+3. **Preview** — `formwork preview page.yaml --out preview.html` renders the
+   spec as a standalone HTML page: sections in order, columns at their
+   factors on a 12-column grid, text parts inline, other parts as titled
+   placeholder cards. Pass `--discovery formwork-discovery.json` to show the
+   catalogue's titles and descriptions; without it, titles are the aliases.
+   No SharePoint calls, no network.
+
+4. **Compile** — `formwork compile page.yaml formwork-discovery.json` resolves
    every component against the live catalogue (by alias or title), emits
    correct section geometry (`sectionFactor` 8/4 for two-thirds, 12 for one,
-   4/4/4 for three), applies property overrides, and produces an apply
+   4/4/4 for three), applies property overrides, compiles text blocks to
+   text controls (`controlType` 4, not web parts), and produces an apply
    payload. An unknown or hidden component refuses to compile — nothing is
    placed that the site did not declare placeable.
+
+   The text-control shape the compiler emits is the one the discover script
+   sends. Measured live (2026-09-06, a stock team site): SharePoint stores
+   that shape byte-for-byte except that `:` inside the control's HTML is
+   rewritten as `&#58;`. Compiling text parts therefore requires a discovery
+   document whose `textControls` samples persisted with only that
+   difference; a document without the measurement, or one whose samples
+   differ in any other way, refuses to compile text parts and says why.
 
 ## The canvas contract
 
@@ -152,10 +195,18 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/mypy src
 ```
 
-Generated paste-ins are additionally gated with `node --check`. The fixtures
-under `tests/fixtures/` were captured from a live modern page (with its data
-already anonymous and sandbox-bound) and are the ground truth for the canvas
-parser.
+The paste-ins and the preview are Jinja templates under
+`src/formwork/templates/` (`jinja2` is the one runtime dependency besides
+PyYAML). The three scripts share one prelude partial, `_prelude.js.j2`,
+which carries the measured transport facts and is the only place the display
+layer names the Site Pages list; each script's template holds its own phase
+logic. Generated paste-ins are additionally gated with `node --check` and
+compared byte for byte with the goldens under `tests/fixtures/expected/`;
+after a deliberate template change, regenerate them with
+`.venv/bin/python tests/test_generator.py` and review the diff like code. The
+fixtures under `tests/fixtures/` were captured from a live modern page (with
+its data already anonymous and sandbox-bound) and are the ground truth for the
+canvas parser.
 
 ## Licence
 

@@ -1,0 +1,60 @@
+{# src/formwork/templates/preview.html.j2 — standalone preview of a page spec: sections in order, columns by factor on a 12-column grid, text parts inline, other parts as placeholder cards. Autoescape is ON here; a text part's HTML is the one value marked safe. No SharePoint, no network, no script. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ page.title }} · formwork preview</title>
+<style>
+  body { margin: 0; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: #323130; background: #f3f2f1; }
+  header { background: #fff; border-bottom: 1px solid #edebe9; padding: 16px 32px; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  header p { margin: 4px 0 0; color: #605e5c; font-size: 12px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 32px; }
+  section { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 24px; margin-bottom: 24px; }
+  .column { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  .part { background: #fff; border-radius: 4px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
+  .part.text > :first-child { margin-top: 0; }
+  .part.text > :last-child { margin-bottom: 0; }
+  .placeholder { border: 1px dashed #c8c6c4; background: #faf9f8; }
+  .placeholder .title { font-weight: 600; margin: 0 0 4px; }
+  .placeholder .alias { color: #605e5c; font-family: ui-monospace, monospace; font-size: 12px; margin: 0; }
+  .placeholder .description { color: #605e5c; font-size: 13px; margin: 8px 0 0; }
+  .placeholder .unresolved { color: #a4262c; font-size: 12px; margin: 8px 0 0; }
+  .empty { color: #a19f9d; font-size: 12px; text-align: center; padding: 16px; border: 1px dashed #edebe9; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ page.title }}</h1>
+  <p>formwork {{ version }} preview · {{ page.sections | length }} section(s){% if not page.resolved %} · titles are aliases (no discovery document given){% endif %}</p>
+</header>
+<main>
+{% for section in page.sections %}
+  <section data-section="{{ section.index }}" data-type="{{ section.type }}">
+  {% for column in section.columns %}
+    <div class="column" data-factor="{{ column.factor }}" style="grid-column: span {{ column.factor }};">
+    {% for part in column.parts %}
+      {% if part.kind == "text" %}
+      <div class="part text">{{ part.html | safe }}</div>
+      {% else %}
+      <div class="part placeholder">
+        <p class="title">{{ part.title }}</p>
+        <p class="alias">{{ part.alias }}</p>
+        {% if part.description %}
+        <p class="description">{{ part.description }}</p>
+        {% endif %}
+        {% if page.resolved and not part.resolved %}
+        <p class="unresolved">not in the discovery catalogue</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    {% else %}
+      <div class="empty">empty column</div>
+    {% endfor %}
+    </div>
+  {% endfor %}
+  </section>
+{% endfor %}
+</main>
+</body>
+</html>

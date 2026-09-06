@@ -1,0 +1,468 @@
+{# src/formwork/templates/discover.js.j2 — run from any page of the site: enumerates placeable components, places one control per part on a scratch page, reads back what SharePoint persisted, recycles, downloads formwork-discovery.json. #}
+// formwork discover v{{ version }} — run from any page of the site.
+// Creates a scratch page, places components, reads back, recycles,
+// and downloads formwork-discovery.json.
+{% include "_prelude.js.j2" %}
+
+  // 1. Enumerate every placeable component on this site.
+  const partsRes = await fetchWithRetry(API("web/GetClientSideWebParts"), {
+    headers: { Accept: "application/json;odata=nometadata" },
+  });
+  if (!partsRes.ok) throw await failed("GetClientSideWebParts", partsRes);
+  const components = (await partsRes.json()).value || [];
+
+  // 2. Create the scratch page, then write the discovery canvas onto it.
+  const SCRATCH = "formwork-discovery-" + Date.now();
+
+  // 3. Place one control per web part, spread across one/two/three-column
+  //    sections, then save and read back what SharePoint persisted.
+  const placeable = components.filter(c => c.ComponentType === 1);
+  if (!placeable.length) {
+    throw new Error("GetClientSideWebParts returned no placeable web part (ComponentType 1)");
+  }
+  const sections = [];
+  const FACTORS = {
+    one: [12],
+    two: [6, 6],
+    three: [4, 4, 4],
+  };
+  let idx = 0;
+  for (const [name, factors] of Object.entries(FACTORS)) {
+    sections.push({ type: name, zoneIndex: (sections.length + 1) * 1000, factors });
+  }
+  const controls = [];
+  const perColumn = {}; // "section:col" -> next controlIndex
+  for (let i = 0; i < placeable.length; i++) {
+    const s = i % sections.length;
+    const section = sections[s];
+    // Mostly column 1; every 4th part exercises column 2/3 when present.
+    const col = (i % 4 === 3 && section.factors.length > 1) ? 2 : 1;
+    const key = (s + 1) + ":" + col;
+    perColumn[key] = (perColumn[key] || 0) + 1;
+    controls.push({
+      controlType: 3,
+      id: "00000000-0000-0000-0000-" + String(i + 1).padStart(12, "0"),
+      position: {
+        zoneIndex: section.zoneIndex,
+        sectionIndex: s + 1,
+        controlIndex: perColumn[key],
+        zoneId: null,
+        sectionFactor: section.factors[col - 1],
+        layoutIndex: 1,
+      },
+      webPartId: placeable[i].Id,
+      emphasis: {},
+    });
+  }
+
+  // 3a. Text controls are NOT web parts: controlType 4, no webPartId, no
+  //     webpartdata; the HTML is the inner content of a data-sp-rte child.
+  //     That is the shape PnP has written since 2017 and is what is SENT
+  //     here. Two known bodies go into a fourth, one-column section and
+  //     both the requested and the persisted blocks are downloaded
+  //     verbatim. Measured (shauntestazure, 2026-09-06, 75 controls):
+  //     SharePoint stores the block byte-identically except that ':' in
+  //     the inner HTML — text and attribute values alike — is rewritten as
+  //     '&#58;'. The compiler gates on that measurement
+  //     (catalogue.TextControlSample.persisted_matches).
+  const TEXT_SAMPLES = [
+    '<h2>Formwork text probe</h2><p>Paragraph with <b>bold</b>, ' +
+      '<a href="https://example.com/">a link</a> and ' +
+      '<span style="color:#a4262c;">a colour span</span>.</p>',
+    '<p>Second text control: <strong>strong</strong>, <em>emphasis</em>, ' +
+      'and a list.</p><ul><li>one</li><li>two</li></ul>',
+  ];
+  const textControlData = (id, zoneIndex, sectionIndex, controlIndex) => ({
+    controlType: 4,
+    id: id,
+    position: {
+      zoneIndex: zoneIndex,
+      sectionIndex: sectionIndex,
+      controlIndex: controlIndex,
+      zoneId: null,
+      sectionFactor: 12,
+      layoutIndex: 1,
+    },
+    emphasis: {},
+    editorType: "CKEditor",
+  });
+  const textSection = { type: "text", zoneIndex: (sections.length + 1) * 1000, factors: [12] };
+  sections.push(textSection);
+  const textControls = TEXT_SAMPLES.map((html, i) => ({
+    html: html,
+    cd: textControlData("00000000-0000-0000-0001-" + String(i + 1).padStart(12, "0"),
+      textSection.zoneIndex, sections.length, i + 1),
+  }));
+
+  // 3b. M3 styling probe: what SharePoint keeps of styled text. Each sample
+  //     is a text control of its own in a fifth, one-column section, so a
+  //     dropped or rewritten construct is attributable to one sample. The
+  //     inline-style samples are what a DSL author would write; the last
+  //     sample carries the class names SharePoint's own editor writes for
+  //     colour, size and highlight, so the two idioms are measured side by
+  //     side. Persistence only: whether the text web part RENDERS an inline
+  //     style is a browser question this readback cannot answer.
+  //     TODO(measure, 2026-09-06): live run pending; nothing in the DSL
+  //     encodes styling until these blocks have been read.
+  const STYLE_SAMPLES = [
+    { label: "color", html: '<p><span style="color:#a4262c;">colour by style</span></p>' },
+    { label: "font-size", html: '<p><span style="font-size:24px;">size by style</span></p>' },
+    { label: "background",
+      html: '<p><span style="background-color:#fff100;">background by style</span></p>' },
+    { label: "styled-link",
+      html: '<p><a href="https://example.com/" style="color:#0078d4;text-decoration:underline;">' +
+        'styled link</a></p>' },
+    { label: "mark", html: '<p>Text with a <mark>marked</mark> word.</p>' },
+    { label: "block-align", html: '<p style="text-align:center;">centred paragraph</p>' },
+    { label: "rte-classes",
+      html: '<p><span class="fontColorRed">colour by class</span>, ' +
+        '<span class="fontSizeLarge">size by class</span>, ' +
+        '<span class="highlightColorYellow">highlight by class</span></p>' },
+  ];
+  const styleSection = { type: "style", zoneIndex: (sections.length + 1) * 1000, factors: [12] };
+  sections.push(styleSection);
+  const styleControls = STYLE_SAMPLES.map((s, i) => ({
+    label: s.label,
+    html: s.html,
+    cd: textControlData("00000000-0000-0000-0002-" + String(i + 1).padStart(12, "0"),
+      styleSection.zoneIndex, sections.length, i + 1),
+  }));
+
+  // 3c. M3 section probe. The styling the canvas model carries per section
+  //     lives on every control IN the section, not on a section object:
+  //     emphasis.zoneEmphasis (0 none, 1 neutral, 2 soft, 3 strong),
+  //     zoneGroupMetadata (collapsible sections), position.sectionFactor 0
+  //     (full width) and position.layoutIndex 2 (the vertical section,
+  //     with position.isLayoutReflowOnTop). Those are the PnP shapes. Each
+  //     variant gets a section of its own holding one web-part control
+  //     (the first placeable part), so a normalisation can be pinned to one
+  //     key; an unknown key rides along in one emphasis block to show
+  //     whether unknown keys are dropped. Theme/accent colour and section
+  //     backgrounds are NOT probed: see `unmeasured` in the document.
+  const SECTION_SAMPLES = [
+    { label: "emphasis-soft", emphasis: { zoneEmphasis: 2 } },
+    { label: "emphasis-unknown-key", emphasis: { zoneEmphasis: 3, formworkProbe: "unknown key" } },
+    { label: "collapsible", emphasis: {}, zoneGroupMetadata: {
+        type: 1, isExpanded: true, showDividerLine: false, iconAlignment: "left",
+        headingLevel: 2, displayName: "Formwork collapsible probe" } },
+    { label: "full-width", emphasis: {}, sectionFactor: 0 },
+    { label: "vertical", emphasis: {}, layoutIndex: 2, isLayoutReflowOnTop: false },
+  ];
+  const sectionControls = SECTION_SAMPLES.map((s, i) => {
+    const factor = s.sectionFactor === undefined ? 12 : s.sectionFactor;
+    const section = { type: "m3-" + s.label, zoneIndex: (sections.length + 1) * 1000, factors: [factor] };
+    sections.push(section);
+    const position = {
+      zoneIndex: section.zoneIndex,
+      sectionIndex: sections.length,
+      controlIndex: 1,
+      zoneId: null,
+      sectionFactor: factor,
+      layoutIndex: s.layoutIndex === undefined ? 1 : s.layoutIndex,
+    };
+    if (s.isLayoutReflowOnTop !== undefined) position.isLayoutReflowOnTop = s.isLayoutReflowOnTop;
+    const cd = {
+      controlType: 3,
+      id: "00000000-0000-0000-0003-" + String(i + 1).padStart(12, "0"),
+      position: position,
+      webPartId: placeable[0].Id,
+      emphasis: s.emphasis,
+    };
+    if (s.zoneGroupMetadata) cd.zoneGroupMetadata = s.zoneGroupMetadata;
+    return { label: s.label, cd: cd };
+  });
+
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/{/g, "&#123;").replace(/}/g, "&#125;")
+      .replace(/:/g, "&#58;");
+  }
+  function webPartBlock(cd) {
+    const comp = placeable.find(c => c.Id === cd.webPartId);
+    const manifest = JSON.parse(comp.Manifest || "{}");
+    const entry = (manifest.preconfiguredEntries || [])[0] || {};
+    const wpd = {
+      id: comp.Id,
+      instanceId: cd.id,
+      title: (entry.title || {}).default || manifest.alias || comp.Id,
+      description: (entry.description || {}).default || "",
+      serverProcessedContent: {},
+      dataVersion: (entry.dataVersion || "1.0"),
+      properties: (entry.properties || {}),
+    };
+    return '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0"' +
+      ' data-sp-controldata="' + esc(JSON.stringify(cd)) + '">' +
+      '<div data-sp-webpartdata="' + esc(JSON.stringify(wpd)) + '"></div></div>';
+  }
+  // The control data is attribute-escaped exactly like a web part's; the
+  // HTML itself is inner content and goes in as written.
+  const textBlock = (cd, html) =>
+    '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0"' +
+    ' data-sp-controldata="' + esc(JSON.stringify(cd)) + '">' +
+    '<div data-sp-rte="">' + html + '</div></div>';
+
+  let canvas = "<div>";
+  for (const cd of controls) {
+    canvas += webPartBlock(cd);
+  }
+  const textRequested = [];
+  for (const t of textControls) {
+    const block = textBlock(t.cd, t.html);
+    canvas += block;
+    textRequested.push({ id: t.cd.id, html: t.html, controlData: t.cd, canvas: block });
+  }
+  const styleRequested = [];
+  for (const s of styleControls) {
+    const block = textBlock(s.cd, s.html);
+    canvas += block;
+    styleRequested.push({ label: s.label, id: s.cd.id, html: s.html, controlData: s.cd, canvas: block });
+  }
+  const sectionRequested = [];
+  for (const s of sectionControls) {
+    const block = webPartBlock(s.cd);
+    canvas += block;
+    sectionRequested.push({ label: s.label, id: s.cd.id, controlData: s.cd, canvas: block });
+  }
+  canvas += "</div>";
+
+  // 3d. Create the scratch page, then write the discovery canvas onto it.
+  const scratch = await createSitePage(SCRATCH);
+  const scratchId = scratch.id;
+  await scratch.setFields({ Title: SCRATCH });
+
+  const itemRes = await fetchWithRetry(
+    PAGES + "/items(" + scratchId + ")",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!itemRes.ok) throw await failed("scratch read", itemRes);
+  const etag = (await itemRes.json()).d.__metadata.etag;
+  const saveRes = await fetchWithRetry(
+    PAGES + "/items(" + scratchId + ")",
+    {
+      method: "POST",
+      headers: {
+        Accept: VERBOSE,
+        "Content-Type": "application/json;odata=verbose",
+        "X-RequestDigest": await getDigest(),
+        "X-HTTP-Method": "MERGE",
+        "If-Match": etag,
+      },
+      body: JSON.stringify({
+        __metadata: { type: "SP.Data.SitePagesItem" },
+        CanvasContent1: canvas,
+      }),
+    }
+  );
+  if (!saveRes.ok) throw await failed("scratch save", saveRes);
+
+  // 4. Read back the persisted canvas.
+  const readRes = await fetchWithRetry(
+    PAGES + "/items(" + scratchId + ")?$select=CanvasContent1",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!readRes.ok) throw await failed("scratch read back", readRes);
+  const stored = (await readRes.json()).d.CanvasContent1 || "";
+
+  // 4a. The persisted controls, verbatim. Split at control boundaries (the
+  //     rule canvas.py parses by), decode each block's controldata through
+  //     the browser's own HTML parser. The raw block is kept, not a
+  //     re-serialisation: the bytes are the evidence.
+  const CONTROL_OPEN = '<div data-sp-canvascontrol=""';
+  // The last block would otherwise carry everything to the end of the
+  // canvas — including the page wrapper's own "</div>", which would make
+  // persisted != requested forever (review P2-2, 2026-09-06). The canvas
+  // is exactly "<div>" + blocks + "</div>", so strip that one wrapper close.
+  const wrapperClose = "</div>";
+  const controlDataOf = (block) => {
+    try {
+      const el = new DOMParser().parseFromString(block, "text/html")
+        .querySelector("[data-sp-controldata]");
+      return JSON.parse(el.getAttribute("data-sp-controldata"));
+    } catch {
+      return null;
+    }
+  };
+  // Every control of a stored canvas, in order, as {id, controlData, canvas}.
+  const persistedControls = (storedCanvas) => {
+    const tail = storedCanvas.endsWith(wrapperClose)
+      ? storedCanvas.slice(0, -wrapperClose.length) : storedCanvas;
+    return tail.split(CONTROL_OPEN).slice(1).map(b => CONTROL_OPEN + b).map(block => {
+      const cd = controlDataOf(block);
+      return { id: cd ? cd.id : null, controlData: cd, canvas: block };
+    });
+  };
+  // The persisted blocks of one sample set, matched by control id and
+  // labelled from the requested side.
+  const persistedFor = (blocks, requested) => {
+    const labels = new Map(requested.map(r => [r.id, r.label]));
+    return blocks.filter(b => labels.has(b.id)).map(b => (
+      { label: labels.get(b.id), id: b.id, controlData: b.controlData, canvas: b.canvas }));
+  };
+  const storedBlocks = persistedControls(stored);
+  const textIds = new Set(textRequested.map(t => t.id));
+  const textPersisted = [];
+  for (const { controlData: cd, canvas: block } of storedBlocks) {
+    if (cd && cd.controlType === 4 && textIds.has(cd.id)) {
+      textPersisted.push({ id: cd.id, controlData: cd, canvas: block });
+    }
+  }
+  const stylePersisted = persistedFor(storedBlocks, styleRequested);
+  const sectionPersisted = persistedFor(storedBlocks, sectionRequested);
+
+  // 4b. The other write path. The MERGE above stores CanvasContent1 as sent
+  //     (measured 2026-09-06: byte-identical for web parts, ':' rewritten in
+  //     text inner HTML). SavePageAsDraft on the sitepages API is the page
+  //     model's own save; whether IT re-serialises the canvas, normalises
+  //     the section keys or drops what it does not know is the measurement
+  //     here. The same canvas goes in with one extra text control appended
+  //     as a marker, so the readback shows whether the body was applied at
+  //     all (bodyApplied) before anything is concluded from it. Non-fatal:
+  //     a refusal is a finding too, and the evidence above still downloads.
+  const MARKER_ID = "00000000-0000-0000-0004-000000000001";
+  const markerBlock = textBlock(
+    textControlData(MARKER_ID, styleSection.zoneIndex, sections.indexOf(styleSection) + 1,
+      styleControls.length + 1),
+    "<p>Formwork page-model save marker</p>");
+  const canvasForPageModel = canvas.slice(0, -wrapperClose.length) + markerBlock + wrapperClose;
+  const probeIds = new Set([...textRequested, ...styleRequested, ...sectionRequested].map(r => r.id));
+  const pageModelSave = {
+    attempted: true,
+    ok: false,
+    status: 0,
+    reason: "",
+    markerId: MARKER_ID,
+    bodyApplied: null,
+    storedCanvasChars: 0,
+    storedControlCount: 0,
+    probeControlsUnchanged: null,
+    controls: [],
+    storedCanvas: null,
+  };
+  try {
+    const draftRes = await fetchWithRetry(
+      API("sitepages/pages(" + scratchId + ")/SavePageAsDraft"),
+      {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+        body: JSON.stringify({
+          __metadata: { type: "SP.Publishing.SitePage" },
+          Title: SCRATCH,
+          CanvasContent1: canvasForPageModel,
+        }),
+      }
+    );
+    pageModelSave.status = draftRes.status;
+    if (!draftRes.ok) {
+      pageModelSave.reason = spError(await draftRes.text().catch((e) => "body unreadable: " + bounded(e)));
+    } else {
+      const againRes = await fetchWithRetry(
+        PAGES + "/items(" + scratchId + ")?$select=CanvasContent1",
+        { headers: { Accept: VERBOSE } }
+      );
+      if (!againRes.ok) throw await failed("read back after SavePageAsDraft", againRes);
+      const storedAgain = (await againRes.json()).d.CanvasContent1 || "";
+      const before = new Map(storedBlocks.map(b => [b.id, b.canvas]));
+      const after = persistedControls(storedAgain);
+      pageModelSave.ok = true;
+      pageModelSave.bodyApplied = after.some(b => b.id === MARKER_ID);
+      pageModelSave.storedCanvasChars = storedAgain.length;
+      pageModelSave.storedControlCount = after.length;
+      pageModelSave.probeControlsUnchanged = [...probeIds].every(id => {
+        const kept = after.find(b => b.id === id);
+        return Boolean(kept) && kept.canvas === before.get(id);
+      });
+      pageModelSave.controls = after.filter(b => probeIds.has(b.id) || b.id === MARKER_ID);
+      pageModelSave.storedCanvas = storedAgain;
+    }
+  } catch (err) {
+    pageModelSave.reason = bounded(err);
+  }
+
+  // 5. Recycle the scratch page (undo the write; evidence is downloaded).
+  const recycleRes = await fetchWithRetry(
+    PAGES + "/items(" + scratchId + ")/recycle",
+    { method: "POST", headers: { Accept: VERBOSE, "X-RequestDigest": await getDigest() } }
+  );
+
+  // 6. Download the discovery document.
+  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
+  const discovery = {
+    schema: "formwork.discovery/v1",
+    discoveredAt: new Date().toISOString(),
+    web: {
+      url: location.origin + (web.d.ServerRelativeUrl === "/" ? "" : web.d.ServerRelativeUrl),
+      id: web.d.Id,
+      title: web.d.Title,
+    },
+    components: components,
+    placements: {
+      placedCount: controls.length + textControls.length + styleControls.length + sectionControls.length,
+      textPlacedCount: textControls.length,
+      styleSampleCount: styleControls.length,
+      sectionSampleCount: sectionControls.length,
+      requestedCanvasChars: canvas.length,
+      storedCanvasChars: stored.length,
+      storedControlCount: (stored.match(/data-sp-canvascontrol/g) || []).length,
+      scratchPageId: scratchId,
+      recycled: recycleRes.ok,
+    },
+    // Additive (schema stays v1): the two text controls as sent and as
+    // SharePoint persisted them, matched by control id on the Python side.
+    textControls: {
+      requested: textRequested,
+      persisted: textPersisted,
+    },
+    // Additive (schema stays v1): the M3 styling probe. Each sample list
+    // pairs requested with persisted by control id, labelled; pageModelSave
+    // is the second readback (step 4b); unmeasured names what this run
+    // deliberately did not claim, and why.
+    styling: {
+      styleSamples: {
+        requested: styleRequested,
+        persisted: stylePersisted,
+      },
+      sectionSamples: {
+        requested: sectionRequested,
+        persisted: sectionPersisted,
+      },
+      pageModelSave: pageModelSave,
+      unmeasured: [
+        { topic: "theme",
+          why: "Theme and accent colour are web-level settings (web/ApplyTheme, thememanager); " +
+            "CanvasContent1 carries no theme field, so no page save can set them." },
+        { topic: "section-background",
+          why: "The control-data shape for section backgrounds (image, gradient) is not known " +
+            "to formwork; a guessed shape would only re-measure unknown-key survival. To learn " +
+            "it, set one in the editor on a sandbox page and run the extract paste-in." },
+        { topic: "section-spacing",
+          why: "formwork knows no per-section spacing key in the canvas model; if this tenant's " +
+            "editor exposes one, extract a page that uses it to learn the shape." },
+        { topic: "rendering",
+          why: "This probe reads persisted bytes only. Whether the text web part renders an " +
+            "inline style, and whether the editor honours the section variants, is a browser " +
+            "question outside this readback." },
+      ],
+    },
+    storedCanvas: stored,
+  };
+  const blob = new Blob([JSON.stringify(discovery, null, 2)],
+                        { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "formwork-discovery.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  console.log("[formwork] discovery complete:",
+    components.length, "components |",
+    controls.length, "placed |",
+    "stored", (stored.match(/data-sp-canvascontrol/g) || []).length, "controls |",
+    "text controls persisted", textPersisted.length, "of", textRequested.length, "|",
+    "style samples persisted", stylePersisted.length, "of", styleRequested.length, "|",
+    "section samples persisted", sectionPersisted.length, "of", sectionRequested.length, "|",
+    "page-model save:", pageModelSave.ok ? "HTTP " + pageModelSave.status +
+      (pageModelSave.bodyApplied ? ", body applied" : ", body NOT applied") +
+      (pageModelSave.probeControlsUnchanged ? ", probe controls unchanged" : ", probe controls CHANGED")
+      : "refused (" + pageModelSave.status + " " + pageModelSave.reason + ")", "|",
+    "scratch recycled:", recycleRes.ok);
+})().catch(err => { console.error("[formwork] discover failed:", err); });

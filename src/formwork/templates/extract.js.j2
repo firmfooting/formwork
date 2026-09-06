@@ -1,0 +1,60 @@
+{# src/formwork/templates/extract.js.j2 — run from the SOURCE page: fetches the page item and the web's identity over same-origin REST, assembles a formwork bundle, downloads it. #}
+// formwork extract v{{ version }} — run from the source page itself.
+{% include "_prelude.js.j2" %}
+
+  const PAGE_PATH = location.pathname.match(/SitePages\/[^/]+\.aspx$/i)[0];
+
+  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
+  const site = await getJson(API("site?$select=Id,Url"));
+  const listId = (await getJson(PAGES + "?$select=Id")).d.Id;
+
+  // location.pathname is percent-encoded; decode before OData-quoting, or
+  // `Bob's%20page.aspx` is compared literally and matches zero rows
+  // (review finding P2-1, 2026-09-06).
+  const fileName = decodeURIComponent(PAGE_PATH.replace(/^SitePages\//i, ""));
+  const pageRes = await fetchWithRetry(
+    PAGES + "/items?$filter=" +
+      encodeURIComponent("FileLeafRef eq '" + odataLiteral(fileName) + "'") +
+      "&$select=Id,Title,Created,Modified,CanvasContent1,LayoutWebpartsContent," +
+      "PageLayoutType,PromotedState,BannerImageUrl,Description,AuthorId,EditorId,FileLeafRef",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!pageRes.ok) throw await failed("page query", pageRes);
+  const pages = (await pageRes.json()).d.results;
+  if (pages.length !== 1) {
+    throw new Error("expected 1 page for " + PAGE_PATH + ", got " + pages.length);
+  }
+  const page = pages[0];
+
+  const webPath = web.d.ServerRelativeUrl === "/"
+    ? "" : web.d.ServerRelativeUrl.replace(/\/$/, "");
+  const bundle = {
+    schema: SCHEMA,
+    extractedAt: new Date().toISOString(),
+    source: {
+      webUrl: location.origin + webPath,
+      webPath: webPath || "/",
+      pagePath: "SitePages/" + page.FileLeafRef,
+      pageItemId: page.Id,
+      listId: listId,
+      webId: web.d.Id,
+      siteId: site.d.Id,
+    },
+    meta: { webTitle: web.d.Title, formworkVersion: "{{ version }}" },
+    page: page,
+    sections: [],
+    webParts: [],
+  };
+
+  const blob = new Blob([JSON.stringify(bundle, null, 2)],
+                        { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "formwork-bundle.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  console.log("[formwork] bundle downloaded:", page.FileLeafRef,
+              "| canvas", (page.CanvasContent1 || "").length, "chars",
+              "| site", PREFIX || "(root)");
+})().catch(err => { console.error("[formwork] extract failed:", err); });
