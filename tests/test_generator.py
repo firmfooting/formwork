@@ -1,7 +1,22 @@
-"""Tests for the paste-in script generators."""
+"""Tests for the paste-in script generators.
+
+Golden files
+------------
+``tests/fixtures/expected/{extract,discover,apply}.js`` hold the emitted
+scripts byte for byte (apply with its default arguments). Any generator change
+fails the golden tests until the fixtures are deliberately regenerated::
+
+    .venv/bin/python tests/test_generator.py
+
+That runs the same generator calls the golden tests do, so the two cannot
+drift. Review the resulting diff like code: it is the paste-in the operator
+will run. Regeneration is deliberately a separate, explicit act rather than a
+flag on the test run; the friction is the point.
+"""
 
 import json
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -13,6 +28,22 @@ from formwork.generator import (
 )
 
 EXPECTED_SCHEMA = "formwork.bundle/v1"
+
+#: Committed golden files: the emitted scripts, byte for byte.
+EXPECTED = pathlib.Path(__file__).parent / "fixtures" / "expected"
+
+#: Every generated script, by the name of its golden file.
+GENERATORS = {
+    "extract": generate_extract_script,
+    "discover": generate_discover_script,
+    "apply": generate_apply_script,
+}
+
+
+def write_golden(path: pathlib.Path, text: str) -> None:
+    """Explicit newline: the default emits CRLF on Windows, so the file reads
+    as modified locally while producing an empty diff."""
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def node_available() -> bool:
@@ -112,3 +143,109 @@ class TestApplyScript:
         script = generate_apply_script(page_name="X", canvas_payload='{"k":1}')
         assert '"X"' in script
         assert json.dumps('{"k":1}') in script  # JSON-embedded, quotes escaped
+
+
+@pytest.mark.parametrize("name", sorted(GENERATORS))
+class TestTransportFacts:
+    """Transport facts ported from dbml-sharepoint v0.4.0 (read 2026-09-06).
+
+    One pin per fact, on every generated script, so the prelude cannot lose a
+    fact without a test going red. Each names the partial the fact came from;
+    the prelude comment in generator.py carries the same citation.
+    """
+
+    def test_throttle_is_detected_on_the_final_url_not_the_status(self, name):
+        # A throttled browser session is redirected to the throttling page,
+        # which arrives as 406 because the script asked for JSON. Detection
+        # keys on the final URL (dbml-sharepoint _http.js.j2:36-44), and one
+        # gate holds every lane (_http.js.j2:45-63).
+        script = GENERATORS[name]()
+        assert r"/\/_layouts\/15\/throttle\.htm(\?|$)/i" in script
+        assert "THROTTLE_PAGE.test(res.url" in script
+        assert "res.status === 429 || res.status === 503" in script
+        assert "Retry-After" in script
+        assert "holdEveryLane(" in script and "passThrottleGate()" in script
+        # Every request goes out through fetchWithRetry: the one bare fetch()
+        # is the wrapper's own call.
+        assert script.count("await fetch(") == 1
+        assert "await fetchWithRetry(" in script
+
+    def test_non_ok_responses_surface_the_server_reason(self, name):
+        # error.message.value is the server's reason; a bare status left a
+        # blocked run undiagnosable (dbml-sharepoint _http.js.j2:25-34, live
+        # finding 2026-07-24).
+        script = GENERATORS[name]()
+        assert "?.error?.message?.value" in script
+        # No throw is left carrying only the status.
+        assert not re.search(r'-> " \+ \w+\.status\)', script)
+        # Every non-OK branch raises through failed(), which shapes the body
+        # with spError, or shapes it with spError directly (the digest).
+        checks = list(re.finditer(r"if \(!\w+\.ok\)", script))
+        assert len(checks) >= 6, "the pin is meaningless if nothing is checked"
+        for check in checks:
+            window = script[check.end() : check.end() + 200]
+            assert "failed(" in window or "spError(" in window, window
+
+    def test_contextinfo_parse_is_guarded(self, name):
+        # The blind .d.GetContextWebInformation.FormDigestValue chain is what
+        # reported dbml-sharepoint #282 as a TypeError in place of the
+        # server's reason (dbml-sharepoint _digest_cached.js.j2:9-42).
+        script = GENERATORS[name]()
+        assert not re.search(r"\)\s*\.d\s*\.GetContextWebInformation", script)
+        assert "?.d?.GetContextWebInformation" in script
+        assert "contextinfo (request digest) failed: " in script
+        for guard in (
+            "no response (",
+            "with an unreadable body (",
+            "carried no GetContextWebInformation",
+            "carried no usable FormDigestValue",
+        ):
+            assert guard in script, guard
+        # Still POSTed (GET -> 405), and parsed in exactly one place.
+        assert re.search(r'API\("contextinfo"\), \{\n\s*method: "POST"', script)
+        assert script.count("?.d?.GetContextWebInformation") == 1
+
+    def test_list_titles_are_odata_quoted(self, name):
+        # getbytitle('...') takes an OData literal: an embedded apostrophe is
+        # doubled, then the whole is URI-encoded (dbml-sharepoint
+        # _site_guard.js.j2:24-27).
+        script = GENERATORS[name]()
+        assert "const odataLiteral = (s) => String(s).replace(/'/g, \"''\");" in script
+        assert "const odataName = (name) => encodeURIComponent(odataLiteral(name));" in script
+        # The only getbytitle left is the helper; every list URL goes through it.
+        assert script.count("getbytitle(") == 1
+        assert "getbytitle('\" + odataName(title) + \"')" in script
+        assert "'Site Pages'" not in script
+        assert 'listByTitle("Site Pages")' in script
+
+
+def test_extract_filter_literal_doubles_apostrophes():
+    # The same OData rule applies to the $filter literal the extract script
+    # builds from the page's file name (a page named "Bob's page.aspx" is
+    # legal). Doubling only: the whole filter is URI-encoded once, after.
+    script = generate_extract_script()
+    assert "\"FileLeafRef eq '\" + odataLiteral(fileName) + \"'\"" in script
+
+
+@pytest.mark.parametrize("name", sorted(GENERATORS))
+def test_script_matches_golden(name):
+    """Golden-file regression: each generated script must match its committed
+    fixture byte for byte. See the module docstring for the regeneration
+    command."""
+    golden_path = EXPECTED / f"{name}.js"
+    assert golden_path.exists(), f"golden file missing: {golden_path}"
+    assert GENERATORS[name]() == golden_path.read_text(encoding="utf-8"), (
+        f"the {name} script output has changed. If the change is intentional, "
+        "regenerate the golden files (see the module docstring for the command) "
+        "and review the diff."
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # Regenerate the goldens. Deliberately not a pytest flag: see
+    # test_script_matches_golden. Uses the SAME generator calls the test does.
+    EXPECTED.mkdir(parents=True, exist_ok=True)
+    for _name, _generate in GENERATORS.items():
+        _target = EXPECTED / f"{_name}.js"
+        write_golden(_target, _generate())
+        print(f"wrote {_target}")

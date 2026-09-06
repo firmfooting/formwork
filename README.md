@@ -152,10 +152,13 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/mypy src
 ```
 
-Generated paste-ins are additionally gated with `node --check`. The fixtures
-under `tests/fixtures/` were captured from a live modern page (with its data
-already anonymous and sandbox-bound) and are the ground truth for the canvas
-parser.
+Generated paste-ins are additionally gated with `node --check` and compared
+byte for byte with the goldens under `tests/fixtures/expected/`; after a
+deliberate generator change, regenerate them with
+`.venv/bin/python tests/test_generator.py` and review the diff like code. The
+fixtures under `tests/fixtures/` were captured from a live modern page (with
+its data already anonymous and sandbox-bound) and are the ground truth for the
+canvas parser.
 
 ## Licence
 
