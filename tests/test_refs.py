@@ -371,3 +371,54 @@ class TestApply:
         assert props["selectedListUrl"] == "/sites/TestSampleTeam/Shared Documents"
         assert props["webRelativeListUrl"] == "Shared Documents"
         assert blocks(result.canvas_html)[DOC_LIBRARY] == blocks(bundle.canvas_html)[DOC_LIBRARY]
+
+
+class TestDirtyRenderUnicode:
+    r"""P1 (re-review): the dirty render passes re-escaped JSON to re.sub.
+
+    A string replacement template makes re parse backslash escapes:
+    json.dumps emits \uXXXX for non-ASCII (re.error: bad escape) and \n/\t
+    silently corrupt the attribute bytes. Found because the P1-2 fix makes
+    `process` dirty live controls for the first time.
+    """
+
+    def test_curly_apostrophe_in_rewritten_title_survives(self):
+        bundle = parse_bundle((FIXTURES / "collabhome.bundle.json").read_text(encoding="utf-8"))
+        refs = scan(bundle)
+        mapping = {
+            "baseUrl": "https://other.example/sites/Other",
+            "siteId": "1" * 8 + "-2222-3333-4444-555555555555",
+            "webId": "a" * 8 + "-2222-3333-4444-555555555555",
+            "lists": {},
+            "textOverrides": {"Quick links": "Team\u2019s links"},
+        }
+        plan = build_plan(refs, mapping)
+        final = apply_plan(bundle, plan)
+        canvas = Canvas.parse(final.canvas_html)
+        quick = next(c for c in canvas.controls if c.web_part_title == "Quick links")
+        title = quick.web_part_data["serverProcessedContent"]["searchablePlainTexts"]["title"]
+        assert title == "Team\u2019s links"
+        # The attribute JSON carries the real character, not an escape.
+        assert "Team\u2019s links" in final.canvas_html
+        assert "\\u2019" not in final.canvas_html
+        # And the rendered control still parses.
+        assert canvas.render() == final.canvas_html
+
+    def test_newline_and_backslash_in_rewritten_value_survive(self):
+        bundle = parse_bundle((FIXTURES / "collabhome.bundle.json").read_text(encoding="utf-8"))
+        refs = scan(bundle)
+        mapping = {
+            "baseUrl": "https://other.example/sites/Other",
+            "siteId": "1" * 8 + "-2222-3333-4444-555555555555",
+            "webId": "a" * 8 + "-2222-3333-4444-555555555555",
+            "lists": {},
+            "textOverrides": {"Quick links": "line one\nline two\\end"},
+        }
+        plan = build_plan(refs, mapping)
+        final = apply_plan(bundle, plan)
+        canvas = Canvas.parse(final.canvas_html)
+        quick = next(c for c in canvas.controls if c.web_part_title == "Quick links")
+        title = quick.web_part_data["serverProcessedContent"]["searchablePlainTexts"]["title"]
+        assert title == "line one\nline two\\end"
+        # Round-trips: the JSON parses back to the same value.
+        assert canvas.render() == final.canvas_html

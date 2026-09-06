@@ -66,16 +66,25 @@ class Control:
         # The controldata attribute sits on the control's own tag; the
         # webpartdata attribute sits on a child div. Substitute over the
         # whole block so both are covered.
+        #
+        # The replacement is a CALLABLE, not an f-string: re.sub parses
+        # backslash escapes in a string template, so re-escaped JSON
+        # (json.dumps emits \uXXXX for non-ASCII, \n, \\ …) either crashed
+        # the render with re.error: bad escape or silently corrupted the
+        # attribute bytes (found by the 2026-09-06 P1-fix re-review; a
+        # curly apostrophe in a Quick links title was enough).
         full = self.open_tag + self.body
         controldata = escape_attribute(
-            json.dumps(self.control_data, separators=(",", ":"))
+            json.dumps(self.control_data, separators=(",", ":"), ensure_ascii=False)
         )
-        full = _CONTROLDATA.sub(f'data-sp-controldata="{controldata}"', full, count=1)
+        full = _CONTROLDATA.sub(lambda _m: f'data-sp-controldata="{controldata}"', full, count=1)
         if self.web_part_data is not None:
             webpartdata = escape_attribute(
-                json.dumps(self.web_part_data, separators=(",", ":"))
+                json.dumps(self.web_part_data, separators=(",", ":"), ensure_ascii=False)
             )
-            full = _WEBPARTDATA.sub(f'data-sp-webpartdata="{webpartdata}"', full, count=1)
+            full = _WEBPARTDATA.sub(
+                lambda _m: f'data-sp-webpartdata="{webpartdata}"', full, count=1
+            )
         return full
 
 
