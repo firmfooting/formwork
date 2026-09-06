@@ -23,6 +23,7 @@ import subprocess
 
 import pytest
 
+from formwork.dsl import UNMEASURED_PAGE_KEYS
 from formwork.findings import load_findings
 from formwork.generator import (
     generate_apply_script,
@@ -368,6 +369,71 @@ class TestDiscoverScript:
         assert "const block = webPartBlock(s.cd);" in script
         assert "Object.assign({}, entry.properties || {}, o.properties || {})" in script
         assert 'schema: "formwork.discovery/v1"' in script
+
+    def test_script_measures_page_state_on_scratch_pages_it_recycles(self):
+        """M7 (2026-09-07): six scratch pages of the lane's own, each created
+        through sitepages/pages with one identity or state field under test
+        (an explicit FileName, one needing normalisation, the Article layout,
+        PromotedState at create and by item MERGE, checkout then publish),
+        read back three ways (page entity, list item, the item's
+        HasUniqueRoleAssignments), recycled after the M5 lists and before the
+        download; the document carries the samples under an additive
+        pageState key and names what the lane did not measure."""
+        script = generate_discover_script()
+        start = script.index("// 5d. Page state and identity")
+        lane = script[start : script.index("// 6. Download the discovery document.")]
+        assert lane.count('await pageStateSample("') == 6
+        for pin in (
+            'const PAGE_STATE = "formwork-pagestate-" + STAMP;',
+            'FileName: PAGE_STATE + "-explicit.aspx"',
+            '"Formwork PageState " + STAMP + " Needs Slug.aspx"',
+            'create: { PageLayoutType: "Article" }',
+            'create: { PageLayoutType: "Article", PromotedState: 1 }',
+            "merge: { PromotedState: 1 }",
+            'pageAction(id, "checkoutpage")',
+            'pageAction(id, "publish")',
+            'pageAction(id, "SavePageAsDraft"',
+            'API("sitepages/pages(" + id + ")/" + action)',
+            '__metadata: { type: "SP.Publishing.SitePage" }',
+            '__metadata: { type: "SP.FieldUrlValue" }',
+            '__metadata: { type: "SP.Data.SitePagesItem" }',
+            '"X-HTTP-Method": "MERGE", "If-Match": item.d.__metadata.etag',
+            "?$select=Id,HasUniqueRoleAssignments",
+            '"OData__UIVersionString", "CheckoutUserId"',
+            "sample.pageId = page.Id;",
+            "sample.persisted.created = pick(page, PAGE_FIELDS);",
+            'pageStateSample("filename-explicit", ["fileName", "description", "bannerImageUrl"]',
+            'pageStateSample("filename-normalised", ["fileName", "permissionInheritance"]',
+            'pageStateSample("layout-article", ["layout"]',
+            'pageStateSample("promoted-at-create", ["promotedState", "layout"]',
+            'pageStateSample("promoted-merge-flip", ["promotedState"]',
+            'pageStateSample("publish-state", ["publishState"]',
+        ):
+            assert pin in lane, pin
+        # The additive key, in discover's document, with the day it ran.
+        assert re.search(
+            r"pageState: \{\n\s*measuredAt: new Date\(\)\.toISOString\(\)\.slice\(0, 10\),\n"
+            r"\s*scratchPrefix: PAGE_STATE,\n\s*pageKeys: pageStateKeys,\n"
+            r"\s*samples: pageStateSamples,\n\s*unmeasured: pageStateUnmeasured,",
+            script,
+        )
+        # What is not claimed is named; the DSL's refused page keys first.
+        for key in UNMEASURED_PAGE_KEYS:
+            assert f'topic: "{key}"' in lane, key
+        for topic in ("permission-break", "banner-json", "rendering"):
+            assert f'topic: "{topic}"' in lane, topic
+        # Recycled after the M5 lists and before the download, non-fatally;
+        # a refused create is a sample with the reason, not a thrown run.
+        page_state_recycle = script.index('PAGES + "/items(" + sample.pageId + ")/recycle"')
+        assert script.index("')/recycle\"") < page_state_recycle
+        assert page_state_recycle < script.index("URL.createObjectURL")
+        assert "sample.recycleReason = spError(" in lane
+        assert 'throw await failed("page-state create " + sample.label, res);' in lane
+        assert "sample.reason = bounded(err);" in lane
+        # The lane is the third shared partial: findprobe carries it too.
+        findprobe = GENERATORS["findprobe"]()
+        assert lane in findprobe
+        assert "pageStateScratchIds: pageStateSamples.map(s => s.pageId)," in findprobe
 
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")

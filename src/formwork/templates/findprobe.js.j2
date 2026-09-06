@@ -184,6 +184,8 @@
     }
   }
 
+{% include "_probe_pagestate.js.j2" %}
+
   // 6. Verdicts: one string per findprobe-lane check-id, in the words the
   //    registry's result column uses, so a re-run's judgement is a string
   //    comparison. "byte-exact" is the stored block equal to the requested
@@ -244,6 +246,37 @@
     (bindingSkipped.length ? "; skipped " + labels(bindingSkipped) : "");
   verdicts["page.emphasis.section-savepage"] = sectionEmphasis.summary;
 
+  // Page-state verdicts (M7): one per FINDINGS.md row, computed from the
+  // same samples the discover lane records. "PENDING LIVE RUN" rows diff
+  // DIFFERS until the first live capture lands in the fixture and the
+  // result cell is rewritten to what the server answered.
+  const psByLabel = {};
+  for (const s of pageStateSamples) psByLabel[s.label] = s;
+  const psOk = label => { const s = psByLabel[label];
+    return s && s.ok ? "ok (page " + s.pageId + ")" : s ? "refused " + s.status + ": " + s.reason : "no sample"; };
+  const psPath = (sample, path) => {
+    // Dotted path through the sample's persisted steps ("read.page.fields").
+    let node = sample && sample.persisted ? sample.persisted : null;
+    for (const part of path.split(".")) {
+      if (node && hasOwn(node, part)) node = node[part];
+      else return "missing";
+    }
+    return JSON.stringify(node);
+  };
+  const psRead = (label, path) => { const s = psByLabel[label];
+    return s ? psPath(s, path) : "no sample"; };
+  verdicts["page.page-state.filename-slug"] =
+    psOk("filename-explicit") + "; normalised: " + psOk("filename-normalised");
+  verdicts["page.page-state.description-banner"] =
+    psRead("filename-explicit", "read.page.fields.Description") + " / " +
+    psRead("filename-explicit", "read.page.fields.BannerImageUrl");
+  verdicts["page.page-state.layout-article"] = psOk("layout-article");
+  verdicts["page.page-state.promoted-state"] =
+    psOk("promoted-at-create") + "; merge flip: " + psOk("promoted-merge-flip");
+  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "read.page.fields");
+  verdicts["page.page-state.permission-inheritance"] =
+    psRead("filename-normalised", "read.permissions.hasUniqueRoleAssignments");
+
   // 7. Diff against the registry and download. "same" means the row still
   //    holds; "DIFFERS" is the operator's cue to re-measure, fold the new
   //    capture into the fixtures and add a dated row. A verdict no row
@@ -293,6 +326,15 @@
       layoutVariants: { requested: layoutRequested, persisted: layoutPersisted },
       listBindings: { fixtures: probeLists, requested: bindingRequested,
         persisted: bindingPersisted, skipped: bindingSkipped },
+      // The M7 page-state lane (5d), under discover's key and in its shape,
+      // listed rather than judged: its rows are discover-lane rows.
+      pageState: {
+        measuredAt: new Date().toISOString().slice(0, 10),
+        scratchPrefix: PAGE_STATE,
+        pageKeys: pageStateKeys,
+        samples: pageStateSamples,
+        unmeasured: pageStateUnmeasured,
+      },
       storedCanvas: stored,
     },
     placements: {
@@ -303,6 +345,8 @@
       storedControlCount: storedBlocks.length,
       savePageScratchId: sectionEmphasis.pageId,
       savePageRecycled: sectionEmphasis.recycled,
+      pageStateScratchIds: pageStateSamples.map(s => s.pageId),
+      pageStateRecycled: pageStateSamples.map(s => s.recycled),
     },
   };
   const blob = new Blob([JSON.stringify(findprobe, null, 2)],
@@ -320,5 +364,7 @@
     "scratch recycled:", recycleRes.ok, "|",
     "SavePage scratch recycled:", sectionEmphasis.recycled, "|",
     "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
-      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
+      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "), "|",
+    "page-state samples ok", pageStateSamples.filter(s => s.ok).length, "of", pageStateSamples.length, "|",
+    "page-state pages recycled:", pageStateRecycled);
 })().catch(err => { console.error("[formwork] findprobe failed:", err); });

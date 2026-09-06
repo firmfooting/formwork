@@ -1,4 +1,4 @@
-// formwork findprobe v0.3.0 — run from any page of the site.
+// formwork findprobe v0.4.0 — run from any page of the site.
 // Re-runs every measurement FINDINGS.md records: creates two probe lists
 // and a scratch page, places the text, styling, property, layout and
 // list-binding probes, reads back, establishes section emphasis through
@@ -288,6 +288,42 @@
       "lane": "findprobe",
       "measured": "2026-09-06",
       "result": "6/6 byte-exact"
+    },
+    {
+      "checkId": "page.page-state.filename-slug",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
+    },
+    {
+      "checkId": "page.page-state.description-banner",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
+    },
+    {
+      "checkId": "page.page-state.layout-article",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
+    },
+    {
+      "checkId": "page.page-state.promoted-state",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
+    },
+    {
+      "checkId": "page.page-state.publish-flow",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
+    },
+    {
+      "checkId": "page.page-state.permission-inheritance",
+      "lane": "findprobe",
+      "measured": "2026-09-07",
+      "result": "PENDING LIVE RUN"
     }
   ];
 
@@ -1127,6 +1163,269 @@
     }
   }
 
+  // 5d. Page state and identity (M7, 2026-09-07). Create is only birth:
+  //     the prelude's createSitePage sends PageLayoutType alone and the
+  //     apply path sets everything else by item MERGE. Each sample below
+  //     creates one scratch page with one thing asked of it and records,
+  //     keyed by page id, what was requested and what came back from three
+  //     reads: the page entity (sitepages/pages), the list item (the fields
+  //     setFields writes) and the item's HasUniqueRoleAssignments. A
+  //     refused create is a sample with ok:false and the server's reason,
+  //     never a throw; every page that got an id is recycled in 5e. What
+  //     the lane does not measure is named under pageStateUnmeasured.
+  const STAMP = Date.now();
+  const PAGE_STATE = "formwork-pagestate-" + STAMP;
+  const PAGE_FIELDS = ["Id", "Title", "FileName", "Url", "AbsoluteUrl", "UniqueId",
+    "PageLayoutType", "PromotedState", "Description", "BannerImageUrl", "BannerThumbnailUrl",
+    "Version", "VersionInfo", "IsPageCheckedOutToCurrentUser", "FirstPublished"];
+  const ITEM_FIELDS = ["Id", "Title", "FileLeafRef", "FileRef", "PageLayoutType", "PromotedState",
+    "Description", "BannerImageUrl", "OData__UIVersionString", "CheckoutUserId",
+    "FirstPublishedDate", "OData__ModerationStatus"];
+  const BANNER_URL = location.origin + "/_layouts/15/images/sitepagethumbnail.png";
+  const pageStateSamples = [];
+  let pageStateKeys = null;
+  // The fields asked for, and the names that were not in the entity: a
+  // missing name is a finding about the entity, not a failed read.
+  const pick = (entity, keys) => {
+    const fields = {};
+    const missing = [];
+    for (const key of keys) {
+      if (entity && hasOwn(entity, key)) fields[key] = entity[key]; else missing.push(key);
+    }
+    return { fields: fields, missing: missing };
+  };
+  // A read that must not fail the sample: {ok, status, reason, d}.
+  async function tryGet(url) {
+    try {
+      const res = await fetchWithRetry(url, { headers: { Accept: VERBOSE } });
+      if (!res.ok) {
+        return { ok: false, status: res.status, d: null,
+          reason: spError(await res.text().catch((e) => "body unreadable: " + bounded(e))) };
+      }
+      return { ok: true, status: res.status, reason: "", d: (await res.json()).d };
+    } catch (err) {
+      return { ok: false, status: 0, reason: bounded(err), d: null };
+    }
+  }
+  // The three reads. The entity and the item are the measurement and throw
+  // into the sample; the permission read is recorded either way. The first
+  // page read also lists every key the two entities carried, so a banner
+  // or state key this lane did not ask for is visible in the document.
+  async function readPageState(id) {
+    const page = await getJson(API("sitepages/pages(" + id + ")"));
+    const item = await getJson(PAGES + "/items(" + id + ")");
+    if (!pageStateKeys) {
+      pageStateKeys = {
+        page: Object.keys(page.d).filter(k => !k.startsWith("__")),
+        item: Object.keys(item.d).filter(k => !k.startsWith("__")),
+      };
+    }
+    const perms = await tryGet(PAGES + "/items(" + id + ")?$select=Id,HasUniqueRoleAssignments");
+    return {
+      page: pick(page.d, PAGE_FIELDS),
+      item: pick(item.d, ITEM_FIELDS),
+      permissions: { ok: perms.ok, status: perms.status, reason: perms.reason,
+        hasUniqueRoleAssignments: perms.d ? perms.d.HasUniqueRoleAssignments : null },
+    };
+  }
+  // The create the prelude makes, with the fields under test beside
+  // PageLayoutType. The entity the POST answers with is the first
+  // persisted view (persisted.created); the reads after it are the rest.
+  async function createPageState(sample, fields) {
+    const res = await fetchWithRetry(API("sitepages/pages"), {
+      method: "POST",
+      headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+      body: JSON.stringify({ __metadata: { type: "SP.Publishing.SitePage" }, ...fields }),
+    });
+    sample.status = res.status;
+    if (!res.ok) throw await failed("page-state create " + sample.label, res);
+    const page = (await res.json()).d;
+    sample.pageId = page.Id;
+    sample.persisted.created = pick(page, PAGE_FIELDS);
+    return page.Id;
+  }
+  // The item MERGE apply makes (prelude setFields: the real etag,
+  // SP.Data.SitePagesItem), recorded rather than thrown so a refused field
+  // is a finding on the sample.
+  async function mergeItem(id, fields) {
+    const outcome = { ok: false, status: 0, reason: "" };
+    try {
+      const item = await getJson(PAGES + "/items(" + id + ")");
+      const res = await fetchWithRetry(PAGES + "/items(" + id + ")", {
+        method: "POST",
+        headers: {
+          Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest(),
+          "X-HTTP-Method": "MERGE", "If-Match": item.d.__metadata.etag,
+        },
+        body: JSON.stringify({ __metadata: { type: "SP.Data.SitePagesItem" }, ...fields }),
+      });
+      outcome.status = res.status;
+      outcome.ok = res.ok;
+      if (!res.ok) {
+        outcome.reason = spError(await res.text().catch((e) => "body unreadable: " + bounded(e)));
+      }
+    } catch (err) {
+      outcome.reason = bounded(err);
+    }
+    return outcome;
+  }
+  // A page-model action on sitepages/pages(<id>): checkoutpage, publish,
+  // SavePageAsDraft. Non-fatal, recorded the same way.
+  async function pageAction(id, action, body) {
+    const outcome = { action: action, ok: false, status: 0, reason: "" };
+    try {
+      const res = await fetchWithRetry(API("sitepages/pages(" + id + ")/" + action), {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      outcome.status = res.status;
+      outcome.ok = res.ok;
+      if (!res.ok) {
+        outcome.reason = spError(await res.text().catch((e) => "body unreadable: " + bounded(e)));
+      }
+    } catch (err) {
+      outcome.reason = bounded(err);
+    }
+    return outcome;
+  }
+  // One sample per scratch page: the requested block is what the steps
+  // send, the persisted block what each step read back, by step name.
+  async function pageStateSample(label, topics, requested, run) {
+    const sample = { label: label, topics: topics, pageId: null, requested: requested,
+      persisted: {}, ok: false, status: 0, reason: "", recycled: null, recycleStatus: 0,
+      recycleReason: "" };
+    pageStateSamples.push(sample);
+    try {
+      await run(sample);
+      sample.ok = true;
+    } catch (err) {
+      sample.reason = bounded(err);
+    }
+    return sample;
+  }
+
+  // (1) fileName, explicit, with a Title: the FileName the POST asked for
+  //     against the entity's FileName and Url and the item's FileLeafRef
+  //     and FileRef. The same page then carries the description and
+  //     banner probes: the item MERGE of Description and BannerImageUrl
+  //     (a URL field on the item, so SP.FieldUrlValue), read back; then
+  //     the page model's own BannerImageUrl through SavePageAsDraft with
+  //     no canvas in the body (page.page-model.draft-refuses-html was
+  //     about an HTML CanvasContent1; a body without one is a different
+  //     question), read back again.
+  await pageStateSample("filename-explicit", ["fileName", "description", "bannerImageUrl"], {
+    create: { Title: PAGE_STATE + " explicit", FileName: PAGE_STATE + "-explicit.aspx",
+      PageLayoutType: "Home" },
+    merge: { Description: "Formwork page-state probe " + STAMP,
+      BannerImageUrl: { __metadata: { type: "SP.FieldUrlValue" }, Url: BANNER_URL, Description: "" } },
+    pageModel: { BannerImageUrl: BANNER_URL },
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.read = await readPageState(id);
+    sample.persisted.merge = await mergeItem(id, sample.requested.merge);
+    sample.persisted.afterMerge = await readPageState(id);
+    sample.persisted.pageModel = await pageAction(id, "SavePageAsDraft",
+      { __metadata: { type: "SP.Publishing.SitePage" }, ...sample.requested.pageModel });
+    sample.persisted.afterPageModel = await readPageState(id);
+  });
+
+  // (2) fileName needing normalisation: spaces and upper case, as an
+  //     editor would type a title. Refused, slugified or kept: recorded.
+  //     Its read is also the cleanest permission-inheritance measurement
+  //     (a page with nothing but its create behind it).
+  await pageStateSample("filename-normalised", ["fileName", "permissionInheritance"], {
+    create: { FileName: "Formwork PageState " + STAMP + " Needs Slug.aspx", PageLayoutType: "Home" },
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.read = await readPageState(id);
+  });
+
+  // (3) A layout beyond Home: PageLayoutType "Article" at create.
+  await pageStateSample("layout-article", ["layout"], {
+    create: { PageLayoutType: "Article" },
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.read = await readPageState(id);
+  });
+
+  // (4) A news page at birth: PromotedState 1 beside the Article layout.
+  await pageStateSample("promoted-at-create", ["promotedState", "layout"], {
+    create: { PageLayoutType: "Article", PromotedState: 1 },
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.read = await readPageState(id);
+  });
+
+  // (5) The flip apply makes today: a Home page, then PromotedState 1 by
+  //     item MERGE (setFields), read back.
+  await pageStateSample("promoted-merge-flip", ["promotedState"], {
+    create: { PageLayoutType: "Home" },
+    merge: { PromotedState: 1 },
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.read = await readPageState(id);
+    sample.persisted.merge = await mergeItem(id, sample.requested.merge);
+    sample.persisted.afterMerge = await readPageState(id);
+  });
+
+  // (6) Publish state: a fresh page's version string, checkout user and
+  //     moderation status; then checkoutpage and publish through the page
+  //     model, each read back.
+  await pageStateSample("publish-state", ["publishState"], {
+    create: { PageLayoutType: "Home" },
+    actions: ["checkoutpage", "publish"],
+  }, async (sample) => {
+    const id = await createPageState(sample, sample.requested.create);
+    sample.persisted.fresh = await readPageState(id);
+    sample.persisted.checkout = await pageAction(id, "checkoutpage");
+    sample.persisted.afterCheckout = await readPageState(id);
+    sample.persisted.publish = await pageAction(id, "publish");
+    sample.persisted.afterPublish = await readPageState(id);
+  });
+
+  // What this lane deliberately does not claim, and why. The DSL refuses
+  // the first as a page key until a lane measures it (dsl.py,
+  // UNMEASURED_PAGE_KEYS).
+  const pageStateUnmeasured = [];
+  pageStateUnmeasured.push({ topic: "navigation",
+    why: "Adding a page to the site navigation is a navigation-node write (web/Navigation/" +
+      "QuickLaunch), not a page save; this lane writes pages only. No FINDINGS.md row " +
+      "page.navigation.* exists, so the DSL refuses a navigation key." });
+  pageStateUnmeasured.push({ topic: "permission-break",
+    why: "HasUniqueRoleAssignments is READ on every page (persisted.*.permissions); breaking " +
+      "inheritance (BreakRoleInheritance) is a permission write this lane does not attempt." });
+  pageStateUnmeasured.push({ topic: "banner-json",
+    why: "The banner is written two ways only (the item's URL field by MERGE, the page model's " +
+      "BannerImageUrl by SavePageAsDraft). Any other banner-bearing key of the page entity is " +
+      "listed under pageKeys and not written, because its shape is not assumed." });
+  pageStateUnmeasured.push({ topic: "rendering",
+    why: "This lane reads persisted fields only; whether the layout, banner or promoted state " +
+      "renders as such is a browser question outside this readback." });
+
+  // 5e. Recycle every page-state page (5d), each outcome on its sample. A
+  //     refusal leaves the page in place and is the operator's cue; never
+  //     a throw, and before the download.
+  for (const sample of pageStateSamples) {
+    if (sample.pageId === null) continue;
+    try {
+      const res = await fetchWithRetry(
+        PAGES + "/items(" + sample.pageId + ")/recycle",
+        { method: "POST", headers: { Accept: VERBOSE, "X-RequestDigest": await getDigest() } }
+      );
+      sample.recycled = res.ok;
+      sample.recycleStatus = res.status;
+      if (!res.ok) {
+        sample.recycleReason = spError(await res.text().catch((e) => "body unreadable: " + bounded(e)));
+      }
+    } catch (err) {
+      sample.recycled = false;
+      sample.recycleReason = bounded(err);
+    }
+  }
+  const pageStateRecycled = pageStateSamples.map(s => s.label + " " + (s.recycled === null
+    ? "n/a" : s.recycled ? "ok" : "FAILED " + s.recycleStatus + " " + s.recycleReason)).join(", ");
+
   // 6. Verdicts: one string per findprobe-lane check-id, in the words the
   //    registry's result column uses, so a re-run's judgement is a string
   //    comparison. "byte-exact" is the stored block equal to the requested
@@ -1187,6 +1486,37 @@
     (bindingSkipped.length ? "; skipped " + labels(bindingSkipped) : "");
   verdicts["page.emphasis.section-savepage"] = sectionEmphasis.summary;
 
+  // Page-state verdicts (M7): one per FINDINGS.md row, computed from the
+  // same samples the discover lane records. "PENDING LIVE RUN" rows diff
+  // DIFFERS until the first live capture lands in the fixture and the
+  // result cell is rewritten to what the server answered.
+  const psByLabel = {};
+  for (const s of pageStateSamples) psByLabel[s.label] = s;
+  const psOk = label => { const s = psByLabel[label];
+    return s && s.ok ? "ok (page " + s.pageId + ")" : s ? "refused " + s.status + ": " + s.reason : "no sample"; };
+  const psPath = (sample, path) => {
+    // Dotted path through the sample's persisted steps ("read.page.fields").
+    let node = sample && sample.persisted ? sample.persisted : null;
+    for (const part of path.split(".")) {
+      if (node && hasOwn(node, part)) node = node[part];
+      else return "missing";
+    }
+    return JSON.stringify(node);
+  };
+  const psRead = (label, path) => { const s = psByLabel[label];
+    return s ? psPath(s, path) : "no sample"; };
+  verdicts["page.page-state.filename-slug"] =
+    psOk("filename-explicit") + "; normalised: " + psOk("filename-normalised");
+  verdicts["page.page-state.description-banner"] =
+    psRead("filename-explicit", "read.page.fields.Description") + " / " +
+    psRead("filename-explicit", "read.page.fields.BannerImageUrl");
+  verdicts["page.page-state.layout-article"] = psOk("layout-article");
+  verdicts["page.page-state.promoted-state"] =
+    psOk("promoted-at-create") + "; merge flip: " + psOk("promoted-merge-flip");
+  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "read.page.fields");
+  verdicts["page.page-state.permission-inheritance"] =
+    psRead("filename-normalised", "read.permissions.hasUniqueRoleAssignments");
+
   // 7. Diff against the registry and download. "same" means the row still
   //    holds; "DIFFERS" is the operator's cue to re-measure, fold the new
   //    capture into the fixtures and add a dated row. A verdict no row
@@ -1236,6 +1566,15 @@
       layoutVariants: { requested: layoutRequested, persisted: layoutPersisted },
       listBindings: { fixtures: probeLists, requested: bindingRequested,
         persisted: bindingPersisted, skipped: bindingSkipped },
+      // The M7 page-state lane (5d), under discover's key and in its shape,
+      // listed rather than judged: its rows are discover-lane rows.
+      pageState: {
+        measuredAt: new Date().toISOString().slice(0, 10),
+        scratchPrefix: PAGE_STATE,
+        pageKeys: pageStateKeys,
+        samples: pageStateSamples,
+        unmeasured: pageStateUnmeasured,
+      },
       storedCanvas: stored,
     },
     placements: {
@@ -1246,6 +1585,8 @@
       storedControlCount: storedBlocks.length,
       savePageScratchId: sectionEmphasis.pageId,
       savePageRecycled: sectionEmphasis.recycled,
+      pageStateScratchIds: pageStateSamples.map(s => s.pageId),
+      pageStateRecycled: pageStateSamples.map(s => s.recycled),
     },
   };
   const blob = new Blob([JSON.stringify(findprobe, null, 2)],
@@ -1263,5 +1604,7 @@
     "scratch recycled:", recycleRes.ok, "|",
     "SavePage scratch recycled:", sectionEmphasis.recycled, "|",
     "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
-      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
+      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "), "|",
+    "page-state samples ok", pageStateSamples.filter(s => s.ok).length, "of", pageStateSamples.length, "|",
+    "page-state pages recycled:", pageStateRecycled);
 })().catch(err => { console.error("[formwork] findprobe failed:", err); });

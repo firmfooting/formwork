@@ -398,6 +398,16 @@ class TestEmphasis:
         with pytest.raises(DslError, match=r"spec: theme is not a page setting"):
             compile_page(spec, parse_discovery(DISCOVERY))
 
+    def test_navigation_on_the_page_refuses_as_unmeasured(self):
+        # M7: no FINDINGS.md row measures a navigation-node write, so the key
+        # is refused naming the row pattern and the lane that would add it.
+        spec = {"page": "T", "navigation": {"quickLaunch": True}, "sections": [{"parts": []}]}
+        with pytest.raises(
+            DslError,
+            match=r"spec: navigation is unmeasured.*page\.navigation\..*formwork gen discover",
+        ):
+            compile_page(spec, parse_discovery(DISCOVERY))
+
     def test_compiled_parts_report_the_emphasis(self):
         result = compile_page(
             self.spec({"component": "NewsWebPart", "emphasis": 2}), parse_discovery(DISCOVERY)

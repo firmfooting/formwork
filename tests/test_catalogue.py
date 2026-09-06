@@ -8,6 +8,11 @@ the script creates and recycles). The catalogue carries each as typed
 samples paired by control id; nothing in the DSL consumes them yet. These
 tests are written against a synthetic document in the wire shape the
 template emits, so the accessors are pinned before a live run exists.
+
+M7 (2026-09-07) adds a fourth key the same way: ``pageState``, the samples of
+the page-state lane (``_probe_pagestate.js.j2``), typed as
+``PageStateSample`` and looked up by label or topic; ``TestPageState`` pins
+it against the wire shape before the operator's live run exists.
 """
 
 import copy
@@ -19,6 +24,7 @@ from formwork.catalogue import (
     Catalogue,
     LayoutVariant,
     ListBinding,
+    PageStateSample,
     ProbeList,
     PropertySample,
     parse_discovery,
@@ -440,3 +446,191 @@ class TestListBindings:
         del doc["listBindings"]["requested"][0]["target"]
         bound = parse_discovery(doc).list_bindings[0]
         assert (bound.target, bound.list_id, bound.list_url) == ("", "", "")
+
+
+EXPLICIT_NAME = "formwork-pagestate-1757203200000-explicit.aspx"
+
+
+def page_state_rows() -> dict:
+    """The wire shape _probe_pagestate.js.j2 writes: three samples (one
+    whose create was refused), a row without a label, and the unmeasured
+    list with a row without a topic."""
+    return {
+        "measuredAt": "2026-09-07",
+        "scratchPrefix": "formwork-pagestate-1757203200000",
+        "pageKeys": {"page": ["Id", "FileName"], "item": ["Id", "FileLeafRef"]},
+        "samples": [
+            {
+                "label": "filename-explicit",
+                "topics": ["fileName", "description", "bannerImageUrl"],
+                "pageId": 41,
+                "requested": {
+                    "create": {"FileName": EXPLICIT_NAME, "PageLayoutType": "Home"},
+                    "merge": {"Description": "Formwork page-state probe 1757203200000"},
+                },
+                "persisted": {
+                    "created": {"fields": {"Id": 41, "FileName": EXPLICIT_NAME}, "missing": []},
+                    "read": {
+                        "page": {
+                            "fields": {"FileName": EXPLICIT_NAME},
+                            "missing": ["FirstPublished"],
+                        },
+                        "item": {"fields": {"FileLeafRef": EXPLICIT_NAME}, "missing": []},
+                        "permissions": {
+                            "ok": True,
+                            "status": 200,
+                            "reason": "",
+                            "hasUniqueRoleAssignments": False,
+                        },
+                    },
+                    "merge": {"ok": True, "status": 204, "reason": ""},
+                },
+                "ok": True,
+                "status": 201,
+                "reason": "",
+                "recycled": True,
+                "recycleStatus": 200,
+                "recycleReason": "",
+            },
+            {
+                "label": "filename-normalised",
+                "topics": ["fileName", "permissionInheritance"],
+                "pageId": None,
+                "requested": {
+                    "create": {"FileName": "Formwork PageState 1757203200000 Needs Slug.aspx"}
+                },
+                "persisted": {},
+                "ok": False,
+                "status": 400,
+                "reason": "page-state create filename-normalised -> 400: The file name is invalid",
+                "recycled": None,
+                "recycleStatus": 0,
+                "recycleReason": "",
+            },
+            {
+                "label": "layout-article",
+                "topics": ["layout"],
+                "pageId": 43,
+                "requested": {"create": {"PageLayoutType": "Article"}},
+                "persisted": {
+                    "read": {"page": {"fields": {"PageLayoutType": "Article"}, "missing": []}}
+                },
+                "ok": True,
+                "status": 201,
+                "reason": "",
+                "recycled": True,
+                "recycleStatus": 200,
+                "recycleReason": "",
+            },
+            {"topics": ["layout"], "pageId": 44},
+        ],
+        "unmeasured": [
+            {"topic": "navigation", "why": "a navigation-node write, not a page save"},
+            {"topic": "permission-break", "why": "inheritance is read, never broken"},
+            {"topic": "rendering", "why": "persisted fields only"},
+            {"why": "no topic"},
+        ],
+    }
+
+
+def with_page_state(rows: dict | list | str | int | None = None) -> Catalogue:
+    return parse_discovery(
+        copy.deepcopy(DISCOVERY) | {"pageState": page_state_rows() if rows is None else rows}
+    )
+
+
+class TestPageState:
+    def test_a_document_without_the_lane_parses_to_empty_tuples(self):
+        assert "pageState" not in DISCOVERY
+        cat = parse_discovery(DISCOVERY)
+        assert cat.page_state == ()
+        assert cat.page_state_unmeasured == ()
+        assert cat.page_state_sample("filename-explicit") is None
+        assert cat.page_state_for("fileName") == ()
+
+    def test_the_catalogue_defaults_stay_constructible_without_it(self):
+        cat = Catalogue(components=())
+        assert (cat.page_state, cat.page_state_unmeasured) == ((), ())
+
+    def test_malformed_blocks_are_tolerated(self):
+        # NB: with_page_state(None) means "the good default rows"; malformed
+        # cases must pass a value, never None.
+        for raw in (
+            {},
+            "nope",
+            7,
+            [],
+            {"samples": "x"},
+            {"samples": [1, {"topics": ["t"]}]},
+            {"unmeasured": [1, {"why": "no topic"}]},
+        ):
+            cat = with_page_state(raw)
+            assert cat.page_state == ()
+            assert cat.page_state_unmeasured == ()
+
+    def test_samples_are_typed_and_looked_up_by_label(self):
+        cat = with_page_state()
+        assert [s.label for s in cat.page_state] == [
+            "filename-explicit",
+            "filename-normalised",
+            "layout-article",
+        ]
+        sample = cat.page_state_sample("filename-explicit")
+        assert isinstance(sample, PageStateSample)
+        assert sample.topics == ("fileName", "description", "bannerImageUrl")
+        assert (sample.page_id, sample.ok, sample.status, sample.recycled) == (41, True, 201, True)
+        assert sample.requested_value("create.FileName") == EXPLICIT_NAME
+        assert sample.persisted_value("read.page.fields.FileName") == EXPLICIT_NAME
+        assert sample.persisted_value("read.item.fields.FileLeafRef") == EXPLICIT_NAME
+        assert sample.persisted_value("read.page.missing") == ["FirstPublished"]
+        assert sample.persisted_value("read.permissions.hasUniqueRoleAssignments") is False
+        assert sample.persisted_value("merge.status") == 204
+
+    def test_a_refused_create_is_a_sample_carrying_the_reason(self):
+        refused = with_page_state().page_state_sample("filename-normalised")
+        assert refused is not None
+        assert (refused.page_id, refused.ok, refused.status) == (None, False, 400)
+        assert refused.reason.endswith("The file name is invalid")
+        assert refused.recycled is None
+        assert refused.persisted == {}
+        assert refused.persisted_value("read.page.fields.FileName") is None
+
+    def test_topics_group_the_samples(self):
+        cat = with_page_state()
+        assert [s.label for s in cat.page_state_for("fileName")] == [
+            "filename-explicit",
+            "filename-normalised",
+        ]
+        assert [s.label for s in cat.page_state_for("layout")] == ["layout-article"]
+        assert cat.page_state_for("publishState") == ()
+
+    def test_paths_that_walk_off_the_data_are_none(self):
+        sample = with_page_state().page_state_sample("layout-article")
+        assert sample is not None
+        assert sample.persisted_value("nope.deeper") is None
+        assert sample.requested_value("create.PageLayoutType.x") is None
+
+    def test_unmeasured_topics_keep_the_document_s_order(self):
+        assert with_page_state().page_state_unmeasured == (
+            "navigation",
+            "permission-break",
+            "rendering",
+        )
+
+    def test_fields_of_the_wrong_type_fall_back_to_the_template_s_defaults(self):
+        rows = page_state_rows()
+        rows["samples"][0] |= {
+            "pageId": "41",
+            "topics": "fileName",
+            "status": "201",
+            "ok": "yes",
+            "recycled": "true",
+            "requested": [],
+            "reason": None,
+        }
+        sample = with_page_state(rows).page_state_sample("filename-explicit")
+        assert sample is not None
+        assert (sample.page_id, sample.topics, sample.status) == (None, (), 0)
+        assert (sample.ok, sample.recycled) == (False, None)
+        assert sample.requested == {}
+        assert sample.reason == ""

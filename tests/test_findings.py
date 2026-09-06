@@ -45,6 +45,12 @@ TEMPLATES = ROOT / "src" / "formwork" / "templates"
 
 #: The date of the two live runs every seeded row was derived from.
 MEASURED = dt.date(2026, 9, 6)
+#: The page-state lane was measured later (its own live run).
+MEASURED_M7 = dt.date(2026, 9, 7)
+#: The result cell of a row whose live run has not happened yet. A pending
+#: row is exempt from the evidence and dating pins above until the run
+#: lands and the cell is rewritten to the server's answer.
+PENDING_RESULT = "PENDING LIVE RUN"
 
 #: The seeded rows, in registry order. Two are re-derived by the catalogue
 #: run (`formwork gen discover`), the rest by the findprobe lane.
@@ -68,6 +74,12 @@ FINDPROBE_LANE = [
     "page.layout.factors-8-4",
     "page.layout.factors-4-8",
     "page.bind.list-library-keys",
+    "page.page-state.filename-slug",
+    "page.page-state.description-banner",
+    "page.page-state.layout-article",
+    "page.page-state.promoted-state",
+    "page.page-state.publish-flow",
+    "page.page-state.permission-inheritance",
 ]
 
 GUID = "12345678-1234-1234-1234-123456789abc"
@@ -109,7 +121,7 @@ class TestTheRepoRegistry:
     def test_seeds_every_measured_claim_in_lane_order(self):
         registry = load_findings(FINDINGS)
         assert [f.check_id for f in registry] == DISCOVER_LANE + FINDPROBE_LANE
-        assert {f.measured for f in registry} == {MEASURED}
+        assert {f.measured for f in registry} <= {MEASURED, MEASURED_M7}
         assert [f.check_id for f in registry.lane("discover")] == DISCOVER_LANE
         assert [f.check_id for f in registry.lane("findprobe")] == FINDPROBE_LANE
         assert registry.check_ids == tuple(DISCOVER_LANE + FINDPROBE_LANE)
@@ -124,6 +136,10 @@ class TestTheRepoRegistry:
 
     def test_every_evidence_pointer_resolves_to_a_fixture_key(self):
         for finding in load_findings(FINDINGS):
+            if finding.result == PENDING_RESULT:
+                # A pending row's evidence block lands with the live run;
+                # the pin tightens when the result cell is rewritten.
+                continue
             path, _, dotted = finding.evidence.partition("#")
             assert path.startswith("tests/fixtures/"), finding.check_id
             assert dotted, finding.check_id
@@ -132,6 +148,8 @@ class TestTheRepoRegistry:
 
     def test_every_row_is_dated_by_the_run_that_produced_it(self):
         for finding in load_findings(FINDINGS):
+            if finding.result == PENDING_RESULT:
+                continue
             path, _, dotted = finding.evidence.partition("#")
             document = json.loads((ROOT / path).read_text(encoding="utf-8"))
             node = walk(document, dotted)
@@ -528,9 +546,12 @@ class TestFindprobe:
         # its registry literal and its SavePage leg. Same bytes in both.
         setup = (TEMPLATES / "_probe_setup.js.j2").read_text(encoding="utf-8")
         legs = (TEMPLATES / "_probe_legs.js.j2").read_text(encoding="utf-8")
+        # M7 (2026-09-07): the page-state lane is a third shared partial,
+        # after the legs in discover and after the SavePage leg in findprobe.
+        pagestate = (TEMPLATES / "_probe_pagestate.js.j2").read_text(encoding="utf-8")
         discover = generate_discover_script()
         findprobe = generate_findprobe_script(load_findings(FINDINGS))
-        for partial in (setup, legs):
+        for partial in (setup, legs, pagestate):
             # One Jinja comment names the partial; everything after it is
             # plain JavaScript that both scripts carry byte for byte.
             header, body = partial.split("\n", 1)

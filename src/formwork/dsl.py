@@ -90,6 +90,21 @@ UNENCODABLE_PAGE_KEYS: dict[str, str] = {
     ),
 }
 
+#: Page keys no measurement covers yet. Distinct from UNENCODABLE_PAGE_KEYS,
+#: whose reasons cite a measurement: each of these names the FINDINGS.md
+#: check-id pattern a discover lane would fill, and is refused until that
+#: lane has run and the row exists. The M7 pageState lane lists them under
+#: ``pageState.unmeasured`` so the refusal and the probe name the same gap.
+UNMEASURED_PAGE_KEYS: dict[str, str] = {
+    "navigation": (
+        "navigation is unmeasured: adding a page to the site navigation is a"
+        " navigation-node write (web/Navigation/QuickLaunch), not a page save, and"
+        " no FINDINGS.md row page.navigation.* records one; refused until a"
+        " formwork gen discover lane measures it (pageState.unmeasured"
+        " 'navigation', 2026-09-07)"
+    ),
+}
+
 
 class DslError(ValueError):
     """A page spec cannot be compiled against this site's catalogue."""
@@ -400,14 +415,23 @@ def section_factors(section: dict[str, Any], index: int) -> tuple[tuple[int, ...
     return tuple(SECTION_FACTORS[type_name]), "measured"
 
 
+def _refuse_unsupported_page_keys(spec: dict[str, Any]) -> None:
+    """Page-level keys compile cannot encode (theme) or has not measured
+    (navigation) refuse with their citation, before any section walks."""
+    for key, reason in UNENCODABLE_PAGE_KEYS.items():
+        if key in spec:
+            raise DslError(f"spec: {reason}")
+    for key, reason in UNMEASURED_PAGE_KEYS.items():
+        if key in spec:
+            raise DslError(f"spec: {reason}")
+
+
 def placements(spec: dict[str, Any]) -> list[Placement]:
     """Walk a spec's sections and parts, validating shape and geometry."""
     sections = spec.get("sections")
     if not isinstance(sections, list) or not sections:
         raise DslError("spec must declare at least one section")
-    for key, reason in UNENCODABLE_PAGE_KEYS.items():
-        if key in spec:
-            raise DslError(f"spec: {reason}")
+    _refuse_unsupported_page_keys(spec)
 
     placed: list[Placement] = []
     ordinal = 0

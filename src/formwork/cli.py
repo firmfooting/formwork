@@ -28,6 +28,7 @@ from .generator import (
     generate_extract_script,
     generate_findprobe_script,
 )
+from .multipage import compile_pages, find_specs
 from .preview import build_preview, render_preview
 from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
 
@@ -211,6 +212,41 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compile_pages(args: argparse.Namespace) -> int:
+    specs = find_specs(args.specs)
+    if not specs:
+        raise ValueError(f"no *.yaml specs under {args.specs}")
+    registry = _registry_for(args)
+    manifest = compile_pages(
+        specs,
+        args.discovery,
+        args.out_dir,
+        registry=registry,
+        max_age_days=args.findings_max_age,
+    )
+    built = sum(1 for result in manifest.results if result.ok)
+    header = manifest.provenance
+    print(
+        f"compiled {built} of {len(manifest.results)} pages against {args.discovery}"
+        f" (web {header.discovery_web_id or '?'}, sha256 {header.discovery_sha256[:12]}):"
+        f" manifest {manifest.path}"
+    )
+    # One line per page, failures and successes alike: a failed page is a
+    # row, not an abort, and the other payloads are on disk.
+    for result in manifest.results:
+        if result.ok:
+            plural = "" if result.parts == 1 else "s"
+            print(
+                f"  ok    {result.spec} -> {result.payload}"
+                f" ({result.title}, {result.parts} part{plural})"
+            )
+        else:
+            print(f"  FAIL  {result.spec}: {result.error}")
+        for warning in result.warnings:
+            print(f"warning: {result.spec}: {warning}", file=sys.stderr)
+    return 0 if manifest.ok else 1
+
+
 def _read_yaml(path: str) -> Any:
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -317,6 +353,37 @@ def build_parser() -> argparse.ArgumentParser:
         f" (default {DEFAULT_MAX_AGE_DAYS})",
     )
     compile_p.set_defaults(func=_cmd_compile)
+
+    compile_pages_p = sub.add_parser(
+        "compile-pages",
+        help="compile every *.yaml spec in a directory (or glob) against one discovery"
+        " document: one payload per spec plus a manifest",
+    )
+    compile_pages_p.add_argument(
+        "specs", help="directory of page specs, or a glob such as pages/*.yaml"
+    )
+    compile_pages_p.add_argument(
+        "discovery", help="formwork-discovery.json from 'gen discover'"
+    )
+    compile_pages_p.add_argument(
+        "--out-dir",
+        default=".",
+        help="where to write <spec>.payload.json per spec and formwork-pages.json",
+    )
+    compile_pages_p.add_argument(
+        "--findings",
+        help="the findings registry to judge each spec's evidence by (default:"
+        f" {DEFAULT_PATH} in the working directory; silent when absent)",
+    )
+    compile_pages_p.add_argument(
+        "--findings-max-age",
+        type=int,
+        default=DEFAULT_MAX_AGE_DAYS,
+        metavar="DAYS",
+        help="warn when a relied-on measurement is older than this many days"
+        f" (default {DEFAULT_MAX_AGE_DAYS})",
+    )
+    compile_pages_p.set_defaults(func=_cmd_compile_pages)
 
     preview_p = sub.add_parser(
         "preview",

@@ -5,12 +5,48 @@ here was measured on the shauntestazure sandbox on the date given; the
 evidence lives under `tests/fixtures/`. No tags have been cut; releases are
 the version literal in `pyproject.toml` and `src/formwork/__init__.py`.
 
-## 0.3.0 — 2026-09-06
+## 0.4.0 — 2026-09-07
 
-Everything merged since 0.2.1: full-page authoring (PR #2, milestones M1–M3)
-and the M3-DSL and M4 release work.
+The findings registry (M6, PR #5) and page state and identity (M7).
 
-### Unreleased (M6, 2026-09-07)
+### Page state and identity (M7)
+
+- **The `pageState` discover lane** (`_probe_pagestate.js.j2`, shared by
+  `formwork gen discover` and `formwork gen findprobe`): six scratch pages
+  of the lane's own, each created through `sitepages/pages` with one
+  identity or state field under test, read back as the page entity, the
+  list item and the item's `HasUniqueRoleAssignments`, and recycled before
+  the download. The samples: an explicit `FileName` beside a `Title`; a
+  `FileName` with spaces and capitals, as an editor would type it; the
+  `Article` layout; `PromotedState` 1 at create; `PromotedState` 1 by the
+  item MERGE apply makes; and a fresh draft's `OData__UIVersionString`,
+  `CheckoutUserId` and moderation status before and after `checkoutpage`
+  and `publish`. The first page also carries `Description` and
+  `BannerImageUrl` (item MERGE as `SP.FieldUrlValue`, then the page model's
+  `SavePageAsDraft` with no canvas). Every step records requested and
+  persisted by page id; a refused create is a sample with the server's
+  reason, never a failed run. `unmeasured` names `navigation`,
+  `permission-break`, `banner-json` and `rendering`. Additive under
+  `formwork.discovery/v1`; `catalogue.PageStateSample` reads it, tolerant
+  of its absence.
+- **`formwork compile-pages <dir-or-glob> <discovery> [--out-dir]`**: every
+  `*.yaml` compiles against one discovery document, one payload per spec,
+  plus `formwork-pages.json` with a shared provenance header (formwork
+  version, discovery SHA-256, web id and URL, discovery timestamp) and a
+  per-page result. One bad spec fails alone; exit 1 if any did. No link
+  resolution, no transaction, no cross-page ordering (README, "Multi-page").
+- **`navigation` refused at parse.** No `page.navigation.*` row exists, so
+  the key is refused naming the row pattern and the discover lane that
+  would measure it (`dsl.UNMEASURED_PAGE_KEYS`, kept apart from the
+  measured `UNENCODABLE_PAGE_KEYS`).
+- `FINDINGS.md` rows for the page-state claims are not written yet: a row
+  cites a fixture, and the lane has not run live. The operator's
+  `formwork gen discover` run supplies `tests/fixtures/<capture>#pageState`
+  and the rows follow it, measured on that date.
+- Version 0.4.0 in `pyproject.toml` and `formwork.__version__`; the goldens
+  carry the string, and discover and findprobe carry the lane.
+
+### Findings registry (M6)
 
 - **`FINDINGS.md`**, the findings registry: one row per measured claim with
   a check-id (`page.<scope>.<question>`), the claim, the measured date, the
@@ -32,6 +68,11 @@ and the M3-DSL and M4 release work.
   `tests/fixtures/expected/findprobe.js`.
 - Discover's comments cite the registry rows where they used to name the
   measurement as pending; the paste-in's bytes otherwise stay as before.
+
+## 0.3.0 — 2026-09-06
+
+Everything merged since 0.2.1: full-page authoring (PR #2, milestones M1–M3)
+and the M3-DSL and M4 release work.
 
 ### Added
 

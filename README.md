@@ -188,8 +188,76 @@ Every refusal names the part or section and the reason, and each reason
 cites its measurement. Beyond the unknown-component, text and emphasis
 refusals above, the spec may not carry `theme` (a web-level setting, not a
 page field) or a section `background` or `spacing`: the canvas shape for
-those is unmeasured, so they are refused rather than guessed at. Nothing in a
-spec is silently dropped.
+those is unmeasured, so they are refused rather than guessed at. A page-level
+`navigation` key is refused as unmeasured: adding a page to the site
+navigation is a navigation-node write, not a page save, and no `FINDINGS.md`
+row `page.navigation.*` records one; the refusal names the discover lane that
+would measure it. Nothing in a spec is silently dropped.
+
+## Multi-page
+
+A site is several pages declared together. `formwork compile-pages` takes a
+directory (or a glob) of specs and one discovery document, compiles every
+`*.yaml` against that one document, and writes one payload per spec plus a
+manifest, `formwork-pages.json`, that carries the run's provenance header.
+
+```yaml
+# pages/home.yaml
+page: Team home
+sections:
+  - type: two-thirds
+    parts:
+      - component: NewsWebPart
+      - text: |
+          ## Welcome
+
+          See the [news](/sites/T/SitePages/Team-news.aspx).
+        column: 2
+```
+
+```yaml
+# pages/news.yaml
+page: Team news
+sections:
+  - type: one
+    parts:
+      - component: NewsWebPart
+        properties: {layoutId: "List"}
+```
+
+```
+formwork compile-pages pages/ formwork-discovery.json --out-dir build/
+```
+
+```text
+compiled 2 of 2 pages against formwork-discovery.json (web 7d1e9b5c-3a2f-4c8e-9b0a-2f6d4e8c1a35, sha256 4f0c9a3e7b21): manifest build/formwork-pages.json
+  ok    home.yaml -> home.payload.json (Team home, 2 parts)
+  ok    news.yaml -> news.payload.json (Team news, 1 part)
+```
+
+Each page compiles alone against the same catalogue: one bad spec fails with
+its own reason, the rest still build, the command exits 1 and the manifest
+records every result. The header, `compiledWith`, names the formwork version,
+the SHA-256 of the discovery bytes, the web id and URL and the discovery's
+own timestamp once for the run; each page entry carries the spec, the title,
+the payload name, the part count and any staleness warnings from
+`FINDINGS.md` (the same ones `compile` prints, per page on stderr).
+
+What multi-page deliberately does not do:
+
+- It writes one payload per spec, not one combined artefact. `formwork gen
+  apply` takes one payload and creates one page, so each payload is applied
+  in turn; two specs with the same stem refuse before anything is written.
+- There is no link resolution. A text part may link to another page of the
+  set (the href above), and the href is emitted as written. Which file name
+  a created page is given is a page-state question the discover lane
+  measures (`pageState`, under "Measured SharePoint behaviour"); until a
+  registry row records it, rewriting a link would be a guess.
+- There is no transaction and no cross-page ordering. Pages compile in name
+  order and are applied one paste-in at a time; nothing sequences them, and
+  a page that fails to apply leaves the others as they are.
+- `navigation` is refused at parse, per page, as in "What compile refuses":
+  the write is unmeasured.
 
 ## Copying a page
 
@@ -349,6 +417,29 @@ error-body finding is a live finding of 2026-07-24)
   generating `zoneId` GUIDs, vertical and collapsible sections through the
   SavePage path, and section background images.
 
+**2026-09-07, page state and identity** (`_probe_pagestate.js.j2`, the lane
+`formwork gen discover` and `formwork gen findprobe` share)
+
+- Measured by the lane, not yet recorded: what SharePoint does with an
+  explicit `FileName` at create, and with one carrying spaces and capitals;
+  whether `Description` and `BannerImageUrl` survive the item MERGE (the
+  banner as an `SP.FieldUrlValue`) and the page model's `SavePageAsDraft`;
+  whether the `Article` layout and `PromotedState` 1 read back as requested
+  at create and after the MERGE apply makes; a fresh draft's
+  `OData__UIVersionString`, `CheckoutUserId` and moderation status, and the
+  same after `checkoutpage` and `publish`; and `HasUniqueRoleAssignments` on
+  every page created. Each is a sample under the document's `pageState` key,
+  requested and persisted by page id, on a scratch page of the lane's own
+  that is recycled before the download.
+- The `FINDINGS.md` rows for these claims follow the first live run: a row
+  cites a fixture, and none exists yet. Until then `compile` neither warns
+  nor refuses on them, and `compile-pages` does no link resolution.
+- Unmeasured by the lane, and named as such in the document: `navigation`
+  (a navigation-node write, not a page save; the DSL refuses the key),
+  `permission-break` (inheritance is read on every page, never broken),
+  `banner-json` (only the two banner writes above are attempted) and
+  `rendering`.
+
 ## The findings registry
 
 [FINDINGS.md](FINDINGS.md) is the table of those claims, one row per
@@ -402,9 +493,11 @@ The paste-ins and the preview are Jinja templates under
 PyYAML). The four scripts share one prelude partial, `_prelude.js.j2`, which
 carries the measured transport facts with their citations and is the only
 place the display layer names the Site Pages list; discover and findprobe
-also share the probe setup and measurement legs (`_probe_setup.js.j2`,
-`_probe_legs.js.j2`); each script's template holds its own phase logic.
-Generated paste-ins are gated with `node --check` and compared byte for byte
+also share the probe setup, the measurement legs and the page-state lane
+(`_probe_setup.js.j2`, `_probe_legs.js.j2`, `_probe_pagestate.js.j2`); each
+script's template holds its own phase logic. `compile-pages` is
+`src/formwork/multipage.py`, a loop over `dsl.compile_page` with the manifest
+around it. Generated paste-ins are gated with `node --check` and compared byte for byte
 with the goldens under `tests/fixtures/expected/` (extract, discover, apply,
 apply with an awkward payload, and findprobe with the repository's
 `FINDINGS.md`); after a deliberate template change, regenerate them with

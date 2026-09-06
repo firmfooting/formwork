@@ -49,6 +49,8 @@
 
 {% include "_probe_legs.js.j2" %}
 
+{% include "_probe_pagestate.js.j2" %}
+
   // 6. Download the discovery document.
   const discovery = {
     schema: "formwork.discovery/v1",
@@ -133,6 +135,19 @@
       persisted: bindingPersisted,
       skipped: bindingSkipped,
     },
+    // Additive (schema stays v1): the M7 page-state lane (5d). One sample
+    // per scratch page, requested and persisted by step and keyed by page
+    // id; pageKeys lists every key the page entity and the list item
+    // carried; unmeasured names what the lane did not claim. The rows
+    // page.page-state.* in FINDINGS.md cite pageState.samples by label
+    // once a live run is folded into a fixture (catalogue.PageStateSample).
+    pageState: {
+      measuredAt: new Date().toISOString().slice(0, 10),
+      scratchPrefix: PAGE_STATE,
+      pageKeys: pageStateKeys,
+      samples: pageStateSamples,
+      unmeasured: pageStateUnmeasured,
+    },
     storedCanvas: stored,
   };
   const blob = new Blob([JSON.stringify(discovery, null, 2)],
@@ -161,5 +176,7 @@
       : "refused (" + pageModelSave.status + " " + pageModelSave.reason + ")", "|",
     "scratch recycled:", recycleRes.ok, "|",
     "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
-      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
+      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "), "|",
+    "page-state samples ok", pageStateSamples.filter(s => s.ok).length, "of", pageStateSamples.length, "|",
+    "page-state pages recycled:", pageStateRecycled);
 })().catch(err => { console.error("[formwork] discover failed:", err); });
