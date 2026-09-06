@@ -18,6 +18,7 @@ from .generator import (
     generate_discover_script,
     generate_extract_script,
 )
+from .preview import build_preview, render_preview
 from .refs import apply_plan, build_plan, scan
 
 
@@ -108,6 +109,22 @@ def _cmd_components(args: argparse.Namespace) -> int:
     )
     for c in placeable:
         print(f"  {c.alias:<40} {c.title}")
+    if cat.text_controls:
+        kept = sum(1 for sample in cat.text_controls if sample.persisted is not None)
+        print(f"text controls: {len(cat.text_controls)} placed, {kept} persisted")
+    return 0
+
+
+def _cmd_preview(args: argparse.Namespace) -> int:
+    spec = _read_yaml(args.spec)
+    cat = parse_discovery(_read_json(args.discovery)) if args.discovery else None
+    document = render_preview(build_preview(spec, cat))
+    if not args.out:
+        sys.stdout.write(document)
+        return 0
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write(document)
+    print(f"preview written: {args.out}")
     return 0
 
 
@@ -219,6 +236,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", default="formwork-payload.json", help="where to write the payload"
     )
     compile_p.set_defaults(func=_cmd_compile)
+
+    preview_p = sub.add_parser(
+        "preview",
+        help="render a page spec as a standalone HTML page (no SharePoint calls)",
+    )
+    preview_p.add_argument("spec", help="page spec YAML")
+    preview_p.add_argument(
+        "--discovery",
+        help="formwork-discovery.json: resolves part titles and descriptions "
+        "(without it, titles are the aliases in the spec)",
+    )
+    preview_p.add_argument("--out", help="where to write the HTML (default: stdout)")
+    preview_p.set_defaults(func=_cmd_preview)
 
     process_p = sub.add_parser(
         "process",

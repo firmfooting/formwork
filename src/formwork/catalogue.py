@@ -6,6 +6,13 @@ string: alias, title, component type, hidden flag, and preconfigured entries
 whose first entry supplies default properties. The catalogue is the authority
 the page DSL compiles against — nothing is placed that the live site did not
 declare placeable.
+
+The discover script also places two text controls (``controlType`` 4, not
+web parts) with known HTML and reads back what SharePoint persisted. They
+arrive under the additive ``textControls`` key and are carried here as
+:class:`TextControlSample` pairs so the shape the compiler emits can be
+checked against a measurement rather than a guess. A discovery document from
+before that probe has no such key and parses exactly as it did.
 """
 
 import json
@@ -21,11 +28,29 @@ class Component:
     hidden: bool
     component_type: int  # 1 = web part, 2 = extension (per wire field ComponentType)
     default_properties: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class TextControlSample:
+    """One text control the discover script placed, as sent and as kept.
+
+    ``requested`` is the canvas block the script wrote; ``persisted`` is the
+    block SharePoint stored for the same control id, verbatim, or None when
+    the readback did not contain it. The persisted bytes are the measurement
+    of the text-control shape; nothing here interprets them.
+    """
+
+    control_id: str
+    html: str
+    requested: str
+    persisted: str | None
 
 
 @dataclass(frozen=True)
 class Catalogue:
     components: tuple[Component, ...]
+    text_controls: tuple[TextControlSample, ...] = ()
 
     @property
     def count(self) -> int:
@@ -70,6 +95,39 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
                 hidden=bool(manifest.get("isHidden", False)),
                 component_type=int(raw.get("ComponentType", 0)),
                 default_properties=dict(first.get("properties") or {}),
+                description=(first.get("description") or {}).get("default", ""),
             )
         )
-    return Catalogue(components=tuple(components))
+    return Catalogue(
+        components=tuple(components),
+        text_controls=_text_controls(discovery.get("textControls")),
+    )
+
+
+def _text_controls(raw: Any) -> tuple[TextControlSample, ...]:
+    """Pair each requested text control with its persisted block by id.
+
+    Tolerant by design: the key is additive, and a document that predates
+    the probe (or a run whose readback lost the controls) yields an empty
+    tuple or samples with ``persisted`` None, never an error.
+    """
+    if not isinstance(raw, dict):
+        return ()
+    persisted_by_id: dict[str, str] = {}
+    for kept in raw.get("persisted") or []:
+        if isinstance(kept, dict) and isinstance(kept.get("canvas"), str):
+            persisted_by_id[str(kept.get("id", ""))] = kept["canvas"]
+    samples: list[TextControlSample] = []
+    for sent in raw.get("requested") or []:
+        if not isinstance(sent, dict):
+            continue
+        control_id = str(sent.get("id", ""))
+        samples.append(
+            TextControlSample(
+                control_id=control_id,
+                html=str(sent.get("html", "")),
+                requested=str(sent.get("canvas", "")),
+                persisted=persisted_by_id.get(control_id),
+            )
+        )
+    return tuple(samples)
