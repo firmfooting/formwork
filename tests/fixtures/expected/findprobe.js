@@ -292,38 +292,38 @@
     {
       "checkId": "page.page-state.filename-slug",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "ok (page 16); normalised: ok (page 17)"
     },
     {
       "checkId": "page.page-state.description-banner",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "null / null"
     },
     {
       "checkId": "page.page-state.layout-article",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "ok (page 18)"
     },
     {
       "checkId": "page.page-state.promoted-state",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "ok (page 19); merge flip: ok (page 20)"
     },
     {
       "checkId": "page.page-state.publish-flow",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "{\"Version\": \"1.0\", \"CheckoutUserId\": null, \"IsPageCheckedOutToCurrentUser\": false}"
     },
     {
       "checkId": "page.page-state.permission-inheritance",
       "lane": "findprobe",
-      "measured": "2026-09-07",
-      "result": "PENDING LIVE RUN"
+      "measured": "2026-09-06",
+      "result": "false"
     }
   ];
 
@@ -1513,7 +1513,9 @@
   verdicts["page.page-state.layout-article"] = psOk("layout-article");
   verdicts["page.page-state.promoted-state"] =
     psOk("promoted-at-create") + "; merge flip: " + psOk("promoted-merge-flip");
-  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "read.page.fields");
+  // The publish sample has no single "read": its verdict is the flow's
+  //   end state — the afterPublish page fields.
+  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "afterPublish.page.fields");
   verdicts["page.page-state.permission-inheritance"] =
     psRead("filename-normalised", "read.permissions.hasUniqueRoleAssignments");
 

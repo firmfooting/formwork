@@ -273,7 +273,9 @@
   verdicts["page.page-state.layout-article"] = psOk("layout-article");
   verdicts["page.page-state.promoted-state"] =
     psOk("promoted-at-create") + "; merge flip: " + psOk("promoted-merge-flip");
-  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "read.page.fields");
+  // The publish sample has no single "read": its verdict is the flow's
+  //   end state — the afterPublish page fields.
+  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "afterPublish.page.fields");
   verdicts["page.page-state.permission-inheritance"] =
     psRead("filename-normalised", "read.permissions.hasUniqueRoleAssignments");
 
