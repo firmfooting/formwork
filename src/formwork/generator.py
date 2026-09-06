@@ -239,7 +239,10 @@ _EXTRACT_BODY = """
   const site = await getJson(API("site?$select=Id,Url"));
   const listId = (await getJson(PAGES + "?$select=Id")).d.Id;
 
-  const fileName = PAGE_PATH.replace(/^SitePages\\//i, "");
+  // location.pathname is percent-encoded; decode before OData-quoting, or
+  // `Bob's%20page.aspx` is compared literally and matches zero rows
+  // (review finding P2-1, 2026-09-06).
+  const fileName = decodeURIComponent(PAGE_PATH.replace(/^SitePages\\//i, ""));
   const pageRes = await fetchWithRetry(
     PAGES + "/items?$filter=" +
       encodeURIComponent("FileLeafRef eq '" + odataLiteral(fileName) + "'") +

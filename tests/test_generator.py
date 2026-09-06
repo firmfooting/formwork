@@ -46,6 +46,11 @@ def write_golden(path: pathlib.Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+#: One backslash, composed: the pins below must survive any display or
+#: transport layer that rewrites escape sequences in source text.
+BS = chr(92)
+
+
 def node_available() -> bool:
     try:
         subprocess.run(["node", "--version"], capture_output=True, check=True)
@@ -158,13 +163,29 @@ class TestTransportFacts:
         # A throttled browser session is redirected to the throttling page,
         # which arrives as 406 because the script asked for JSON. Detection
         # keys on the final URL (dbml-sharepoint _http.js.j2:36-44), and one
-        # gate holds every lane (_http.js.j2:45-63).
+        # gate holds every lane (_http.js.j2:45-63). Pins are composed with
+        # BS (one backslash) so no transport layer can rewrite escapes.
         script = GENERATORS[name]()
-        assert r"/\/_layouts\/15\/throttle\.htm(\?|$)/i" in script
-        assert "THROTTLE_PAGE.test(res.url" in script
-        assert "res.status === 429 || res.status === 503" in script
+        throttle_re = (
+            "/" + BS + "/_layouts" + BS + "/15" + BS + "/throttle"
+            + BS + ".htm(" + BS + "?|$)/i"
+        )
+        assert throttle_re in script
+        # `||` here, not `&&`: a throttled browser session arrives as 406
+        # from the redirect, not 429/503. Pin the expression across both
+        # lines so `||` -> `&&` cannot slip through (review P2-2).
+        detection = re.search(
+            "res" + BS + ".status === 429 [|][|] res" + BS + ".status === 503"
+            + BS + "s* [|][|] " + BS + "s*THROTTLE_PAGE" + BS + ".test"
+            + BS + "(res" + BS + ".url",
+            script,
+        )
+        assert detection, "throttle detection must key on the final URL"
         assert "Retry-After" in script
-        assert "holdEveryLane(" in script and "passThrottleGate()" in script
+        # Pin the call sites with their await: the bare definitions would
+        # otherwise satisfy the pin while the calls were deleted (P2-2).
+        assert "await passThrottleGate();" in script
+        assert "await holdEveryLane(wait);" in script
         # Every request goes out through fetchWithRetry: the one bare fetch()
         # is the wrapper's own call.
         assert script.count("await fetch(") == 1
