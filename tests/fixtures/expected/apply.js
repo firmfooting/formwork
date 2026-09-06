@@ -1,4 +1,4 @@
-// formwork apply v0.2.0 — run from any page of the TARGET site.
+// formwork apply v0.3.0 — run from any page of the TARGET site.
 // Creates the page, writes the embedded canvas via REST, verifies.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
@@ -89,15 +89,6 @@
   async function getJson(url) {
     const res = await fetchWithRetry(url, { headers: { Accept: VERBOSE } });
     if (!res.ok) throw await failed("GET " + url, res);
-    return res.json();
-  }
-  async function postJson(url, body) {
-    const res = await fetchWithRetry(url, {
-      method: "POST",
-      headers: { Accept: VERBOSE, "Content-Type": VERBOSE },
-      body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) throw await failed("POST " + url, res);
     return res.json();
   }
   // The context digest must be POSTed — GET is refused with 405. This is the
@@ -237,7 +228,17 @@
     "| canvas stored:", storedLen, "chars",
     "| byte-exact:", byteExact);
   if (!byteExact) {
-    throw new Error("canvas mismatch: sent " + PAYLOAD.canvas.length + ", stored " + storedLen);
+    // The page exists: it was created and merged before this check ran.
+    // Nothing here recycles it (an unmeasured auto-delete would be a new
+    // behaviour); keeping or recycling it is the operator's call. Compile
+    // spells ':' as '&#58;' inside text HTML, the stored spelling measured
+    // 2026-09-06, so a mismatch here is a real difference, not that rewrite.
+    throw new Error(
+      "canvas mismatch: sent " + PAYLOAD.canvas.length + " chars, stored " + storedLen +
+      ". The page EXISTS with what SharePoint stored: item " + created.id + " at " +
+      location.origin + created.url +
+      ". Formwork does not recycle it; keep it or recycle it yourself."
+    );
   }
   console.log("[formwork] verify OK — reload the new page to inspect it.");
 })().catch(err => { console.error("[formwork] apply failed:", err); });

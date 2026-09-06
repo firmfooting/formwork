@@ -136,15 +136,6 @@
     if (!res.ok) throw await failed("GET " + url, res);
     return res.json();
   }
-  async function postJson(url, body) {
-    const res = await fetchWithRetry(url, {
-      method: "POST",
-      headers: { Accept: VERBOSE, "Content-Type": VERBOSE },
-      body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) throw await failed("POST " + url, res);
-    return res.json();
-  }
   // The context digest must be POSTed — GET is refused with 405. This is the
   // one place a contextinfo response is parsed, and each step is guarded: the
   // blind .d.GetContextWebInformation.FormDigestValue chain is what reported

@@ -17,7 +17,6 @@ MINIMAL = {
     "meta": {"webTitle": "alpha"},
     "page": {"Title": "Tooling home", "CanvasContent1": "<div></div>"},
     "sections": [],
-    "webParts": [],
 }
 
 
@@ -57,3 +56,14 @@ class TestParseBundle:
     def test_parse_from_json_string(self):
         bundle = parse_bundle(json.dumps(MINIMAL))
         assert bundle.source.web_url == "https://contoso.sharepoint.com/sites/alpha"
+
+    def test_legacy_web_parts_key_is_ignored(self):
+        # Bundles from 0.3.0 and earlier carry "webParts": [] (the extract
+        # paste-in never filled it). The canvas is the source of the web
+        # parts, so the key is neither a field nor read; it survives only in
+        # ``raw``, the file as loaded (review P1-2, 2026-09-06).
+        legacy = dict(MINIMAL, webParts=[{"id": "x", "title": "stale"}])
+        bundle = parse_bundle(legacy)
+        assert not hasattr(bundle, "web_parts")
+        assert bundle.raw["webParts"] == [{"id": "x", "title": "stale"}]
+        assert bundle.page == MINIMAL["page"]

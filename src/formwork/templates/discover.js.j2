@@ -1,7 +1,7 @@
-{# src/formwork/templates/discover.js.j2 — run from any page of the site: enumerates placeable components, places one control per part on a scratch page, reads back what SharePoint persisted, recycles, downloads formwork-discovery.json. #}
+{# src/formwork/templates/discover.js.j2 — run from any page of the site: enumerates placeable components, creates two probe lists and a scratch page, places one control per part plus the text, styling, property, layout and list-binding probes, reads back what SharePoint persisted, recycles all three, downloads formwork-discovery.json. #}
 // formwork discover v{{ version }} — run from any page of the site.
-// Creates a scratch page, places components, reads back, recycles,
-// and downloads formwork-discovery.json.
+// Creates two probe lists and a scratch page, places components, reads
+// back, recycles all three, and downloads formwork-discovery.json.
 {% include "_prelude.js.j2" %}
 
   // 1. Enumerate every placeable component on this site.
@@ -13,6 +13,67 @@
 
   // 2. Create the scratch page, then write the discovery canvas onto it.
   const SCRATCH = "formwork-discovery-" + Date.now();
+
+  // 2a. The web the probes run on. Its server-relative root is what a
+  //     list-bound part's webRelativeListUrl is relative to: measured on
+  //     the live CollabHome canvas (tests/fixtures/collabhome.bundle.json,
+  //     2026-09-05), selectedListUrl "/sites/TestSampleTeam/Shared
+  //     Documents" travels with webRelativeListUrl "Shared Documents".
+  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
+  const webRoot = web.d.ServerRelativeUrl === "/" ? "" : web.d.ServerRelativeUrl;
+  const webRelative = (serverRelativeUrl) =>
+    serverRelativeUrl.startsWith(webRoot + "/")
+      ? serverRelativeUrl.slice(webRoot.length + 1) : serverRelativeUrl;
+
+  // 2b. M5 list-binding fixtures: a custom list and a document library of
+  //     this run's own, created BEFORE the scratch page so the binding
+  //     probe (3g) writes real ids and URLs, read back from _api/web/lists
+  //     rather than guessed. Both are recycled after the scratch page (5a).
+  //     Non-fatal: a refused create is recorded with the server's reason
+  //     and every binding that targets it is skipped, not invented. A list
+  //     created but not fully described (the detail read failed) is still
+  //     recycled; only a binding needs the detail.
+  const PROBE_LISTS = [
+    { key: "list", title: "Formwork Probe Source", baseTemplate: 100 },
+    { key: "library", title: "Formwork Probe Docs", baseTemplate: 101 },
+  ];
+  const probeLists = [];
+  for (const spec of PROBE_LISTS) {
+    const probe = {
+      key: spec.key, title: spec.title, baseTemplate: spec.baseTemplate,
+      created: false, status: 0, reason: "",
+      id: null, serverRelativeUrl: null, webRelativeUrl: null, defaultViewId: null, defaultViewUrl: null,
+      recycled: null, recycleStatus: 0, recycleReason: "",
+    };
+    probeLists.push(probe);
+    try {
+      const createRes = await fetchWithRetry(API("web/lists"), {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+        body: JSON.stringify({
+          __metadata: { type: "SP.List" },
+          Title: spec.title,
+          BaseTemplate: spec.baseTemplate,
+        }),
+      });
+      probe.status = createRes.status;
+      if (!createRes.ok) {
+        probe.reason = spError(await createRes.text().catch((e) => "body unreadable: " + bounded(e)));
+        continue;
+      }
+      probe.created = true;
+      probe.id = (await createRes.json()).d.Id;
+      const detail = (await getJson(API("web/lists(guid'" + probe.id + "')" +
+        "?$select=Id,Title,DefaultViewUrl,RootFolder/ServerRelativeUrl,DefaultView/Id" +
+        "&$expand=RootFolder,DefaultView"))).d;
+      probe.serverRelativeUrl = detail.RootFolder.ServerRelativeUrl;
+      probe.webRelativeUrl = webRelative(detail.RootFolder.ServerRelativeUrl);
+      probe.defaultViewId = detail.DefaultView.Id;
+      probe.defaultViewUrl = detail.DefaultViewUrl;
+    } catch (err) {
+      probe.reason = bounded(err);
+    }
+  }
 
   // 3. Place one control per web part, spread across one/two/three-column
   //    sections, then save and read back what SharePoint persisted.
@@ -172,24 +233,220 @@
     return { label: s.label, cd: cd };
   });
 
+  // The manifest a placeable component embeds, its preconfigured entries
+  // and the placeable part behind an alias. A part missing from this site
+  // is a finding (recorded under `skipped`), never a throw.
+  const manifestOf = (comp) => JSON.parse(comp.Manifest || "{}");
+  const entriesOf = (comp) => manifestOf(comp).preconfiguredEntries || [];
+  const byAlias = (alias) => placeable.find(c => manifestOf(c).alias === alias) || null;
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  const padId = (range, n) => "00000000-0000-0000-" + range + "-" + String(n).padStart(12, "0");
+  const controlAt = (id, section, sectionIndex, col, controlIndex, webPartId) => ({
+    controlType: 3,
+    id: id,
+    position: {
+      zoneIndex: section.zoneIndex,
+      sectionIndex: sectionIndex,
+      controlIndex: controlIndex,
+      zoneId: null,
+      sectionFactor: section.factors[col - 1],
+      layoutIndex: 1,
+    },
+    webPartId: webPartId,
+    emphasis: {},
+  });
+
+  // 3e. M5 property probe: does a flat, visible property survive the item
+  //     MERGE byte-for-byte? Six representative parts, each placed TWICE in
+  //     a one-column section of its own: the manifest's first entry as-is
+  //     ("default"), then the same with ONE top-level property changed
+  //     ("modified"), the types spread across boolean, enum, free text with
+  //     a ':' (the one rewrite measured on text, 2026-09-06) and a numeric
+  //     string. Nothing nested: the shape question is whether a value at a
+  //     path comes back equal, judged on the Python side
+  //     (catalogue.PropertySample.value_round_tripped). The site's
+  //     catalogue has no DocumentLibraryWebPart: "Document library" is the
+  //     second preconfigured entry of ListWebPart (isDocumentLibrary true;
+  //     tests/fixtures/discovery.styling.json, 2026-09-06), so the list
+  //     part is the sixth here and the library entry is measured in 3g.
+  //     Unmeasured until a live run is folded (M5, 2026-09-06).
+  const PROPERTY_SAMPLES = [
+    { component: "NewsWebPart", path: "showChrome", value: false },
+    { component: "QuickLinksWebPart", path: "layoutId", value: "List" },
+    { component: "ImageWebPart", path: "captionText", value: "Formwork caption probe: image" },
+    { component: "EventsWebPart", path: "layout", value: "Compact" },
+    { component: "HeroWebPart", path: "heroLayoutThreshold", value: "320" },
+    { component: "ListWebPart", path: "isDocumentLibrary", value: true },
+  ];
+  const propertyControls = [];
+  const propertySkipped = [];
+  for (const sample of PROPERTY_SAMPLES) {
+    const comp = byAlias(sample.component);
+    if (!comp) {
+      propertySkipped.push({ component: sample.component,
+        why: "no placeable component (ComponentType 1) with that alias on this site" });
+      continue;
+    }
+    const defaults = (entriesOf(comp)[0] || {}).properties || {};
+    const section = { type: "m5-" + sample.component, zoneIndex: (sections.length + 1) * 1000, factors: [12] };
+    sections.push(section);
+    for (const variant of ["default", "modified"]) {
+      const modified = variant === "modified";
+      const oldValue = hasOwn(defaults, sample.path) ? defaults[sample.path] : null;
+      propertyControls.push({
+        component: sample.component,
+        variant: variant,
+        path: sample.path,
+        defaultHasKey: hasOwn(defaults, sample.path),
+        oldValue: oldValue,
+        newValue: modified ? sample.value : oldValue,
+        properties: modified ? { [sample.path]: sample.value } : {},
+        cd: controlAt(padId("0005", propertyControls.length + 1), section, sections.length, 1,
+          modified ? 2 : 1, comp.Id),
+      });
+    }
+  }
+
+  // 3f. M5 layout probe: the two-column factor orders and column order.
+  //     Step 3 places 6/6 and 4/4/4 only; PnP's one-third layouts are 8/4
+  //     and 4/8, and a control's column is only its sectionFactor plus its
+  //     controlIndex within that column. Three sections on the first
+  //     placeable part: 8/4 with one control in column 1, 4/8 with one in
+  //     column 1, and 4/8 with a control in column 2 WRITTEN BEFORE one in
+  //     column 1, so the readback shows whether SharePoint keeps the
+  //     factors and the written order, or re-sorts by column. Unmeasured
+  //     until a live run is folded (M5, 2026-09-06).
+  const LAYOUT_SAMPLES = [
+    { section: "split-8-4", factors: [8, 4], columns: [1] },
+    { section: "split-4-8", factors: [4, 8], columns: [1] },
+    { section: "split-4-8-two", factors: [4, 8], columns: [2, 1] },
+  ];
+  const layoutControls = [];
+  for (const s of LAYOUT_SAMPLES) {
+    const section = { type: "m5-" + s.section, zoneIndex: (sections.length + 1) * 1000, factors: s.factors };
+    sections.push(section);
+    const perCol = {};
+    for (const col of s.columns) {
+      perCol[col] = (perCol[col] || 0) + 1;
+      layoutControls.push({
+        label: s.section + "-col" + col,
+        cd: controlAt(padId("0006", layoutControls.length + 1), section, sections.length, col,
+          perCol[col], placeable[0].Id),
+      });
+    }
+  }
+
+  // 3g. M5 list-binding probe, the measurement M5 most needs: the shape of
+  //     a part bound to a list. Each binding is the live CollabHome shape
+  //     (tests/fixtures/collabhome.bundle.json, 2026-09-05) layered over
+  //     the manifest entry's defaults, with the ids and URLs of the fixture
+  //     containers from 2b. Measured library shape: properties
+  //     selectedListId, selectedListUrl (server-relative root folder),
+  //     webRelativeListUrl (no leading slash), webpartHeightKey 4,
+  //     selectedViewId, hideCommandBar false; serverProcessedContent with
+  //     searchablePlainTexts.listTitle. Measured Quick links shape
+  //     (dataVersion "2.2"): an items[] entry whose url and title live in
+  //     serverProcessedContent.links["items[0].sourceItem.url"] and
+  //     .searchablePlainTexts["items[0].title"], links.baseUrl the web's
+  //     absolute URL, componentDependencies.layoutComponentId the entry's
+  //     own. The library part and the list part are the two preconfigured
+  //     entries of ListWebPart (isDocumentLibrary true / false); each is
+  //     bound to BOTH containers, and Quick links points one item at each
+  //     container's default view, so a cross-type binding (a library part
+  //     on a custom list) is measured next to the matching one.
+  const listBinding = (probe) => ({
+    properties: {
+      selectedListId: probe.id,
+      selectedListUrl: probe.serverRelativeUrl,
+      webRelativeListUrl: probe.webRelativeUrl,
+      webpartHeightKey: 4,
+      selectedViewId: probe.defaultViewId,
+      hideCommandBar: false,
+    },
+    spc: { htmlStrings: {}, searchablePlainTexts: { listTitle: probe.title }, imageSources: {}, links: {} },
+  });
+  const quickLinksBinding = (probe, comp) => ({
+    dataVersion: "2.2",
+    properties: {
+      items: [{ id: 1, description: null, altText: "", thumbnailType: 3,
+        sourceItem: { itemType: 2, fileExtension: "", progId: "" } }],
+    },
+    spc: {
+      htmlStrings: {},
+      searchablePlainTexts: { title: "Quick links", "items[0].title": probe.title },
+      imageSources: {},
+      links: { baseUrl: location.origin + webRoot,
+        "items[0].sourceItem.url": location.origin + probe.defaultViewUrl },
+      componentDependencies: {
+        layoutComponentId: ((entriesOf(comp)[0] || {}).properties || {}).layoutComponentId || "" },
+    },
+  });
+  const BINDING_SAMPLES = [
+    { label: "library-part-to-library", component: "ListWebPart", library: true, target: "library" },
+    { label: "list-part-to-library", component: "ListWebPart", library: false, target: "library" },
+    { label: "quick-links-to-library", component: "QuickLinksWebPart", target: "library" },
+    { label: "library-part-to-list", component: "ListWebPart", library: true, target: "list" },
+    { label: "list-part-to-list", component: "ListWebPart", library: false, target: "list" },
+    { label: "quick-links-to-list", component: "QuickLinksWebPart", target: "list" },
+  ];
+  const bindingSection = { type: "m5-bindings", zoneIndex: (sections.length + 1) * 1000, factors: [12] };
+  sections.push(bindingSection);
+  const bindingControls = [];
+  const bindingSkipped = [];
+  for (const s of BINDING_SAMPLES) {
+    const comp = byAlias(s.component);
+    const probe = probeLists.find(p => p.key === s.target);
+    const entry = s.library === undefined ? 0
+      : entriesOf(comp || {}).findIndex(e => Boolean((e.properties || {}).isDocumentLibrary) === s.library);
+    if (!comp) {
+      bindingSkipped.push({ label: s.label, why: "no placeable component with alias " + s.component });
+    } else if (entry < 0) {
+      bindingSkipped.push({ label: s.label,
+        why: s.component + " has no preconfigured entry with isDocumentLibrary " + s.library });
+    } else if (!probe.serverRelativeUrl) {
+      bindingSkipped.push({ label: s.label,
+        why: "fixture " + s.target + " not available: " + (probe.reason || "not described") });
+    } else {
+      const binding = s.library === undefined ? quickLinksBinding(probe, comp) : listBinding(probe);
+      bindingControls.push({
+        label: s.label,
+        component: s.component,
+        entry: entry,
+        target: probe,
+        binding: binding,
+        cd: controlAt(padId("0007", bindingControls.length + 1), bindingSection, sections.length, 1,
+          bindingControls.length + 1, comp.Id),
+      });
+    }
+  }
+
   function esc(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/{/g, "&#123;").replace(/}/g, "&#125;")
       .replace(/:/g, "&#58;");
   }
-  function webPartBlock(cd) {
+  // The webpartdata of a control: the manifest's preconfigured entry
+  // (opts.entry, default the first) with opts.properties layered over the
+  // entry's defaults, opts.spc as serverProcessedContent and opts.dataVersion
+  // over the entry's. Without opts this is exactly the M1 shape, so the
+  // step-3 and 3c blocks are byte-stable against the M5 probes.
+  function webPartData(cd, opts) {
+    const o = opts || {};
     const comp = placeable.find(c => c.Id === cd.webPartId);
-    const manifest = JSON.parse(comp.Manifest || "{}");
-    const entry = (manifest.preconfiguredEntries || [])[0] || {};
-    const wpd = {
+    const manifest = manifestOf(comp);
+    const entry = (manifest.preconfiguredEntries || [])[o.entry || 0] || {};
+    return {
       id: comp.Id,
       instanceId: cd.id,
       title: (entry.title || {}).default || manifest.alias || comp.Id,
       description: (entry.description || {}).default || "",
-      serverProcessedContent: {},
-      dataVersion: (entry.dataVersion || "1.0"),
-      properties: (entry.properties || {}),
+      serverProcessedContent: o.spc || {},
+      dataVersion: o.dataVersion || entry.dataVersion || "1.0",
+      properties: Object.assign({}, entry.properties || {}, o.properties || {}),
     };
+  }
+  function webPartBlock(cd, opts) {
+    const wpd = webPartData(cd, opts);
     return '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0"' +
       ' data-sp-controldata="' + esc(JSON.stringify(cd)) + '">' +
       '<div data-sp-webpartdata="' + esc(JSON.stringify(wpd)) + '"></div></div>';
@@ -222,6 +479,35 @@
     const block = webPartBlock(s.cd);
     canvas += block;
     sectionRequested.push({ label: s.label, id: s.cd.id, controlData: s.cd, canvas: block });
+  }
+  const propertyRequested = [];
+  for (const p of propertyControls) {
+    const block = webPartBlock(p.cd, { properties: p.properties });
+    canvas += block;
+    propertyRequested.push({ component: p.component, id: p.cd.id, variant: p.variant,
+      propertyPath: p.path, defaultHasKey: p.defaultHasKey, oldValue: p.oldValue, newValue: p.newValue,
+      controlData: p.cd, canvas: block });
+  }
+  const layoutRequested = [];
+  for (const l of layoutControls) {
+    const block = webPartBlock(l.cd);
+    canvas += block;
+    layoutRequested.push({ label: l.label, id: l.cd.id, controlData: l.cd, canvas: block });
+  }
+  const bindingTarget = (probe) => ({
+    key: probe.key, title: probe.title, listId: probe.id, serverRelativeUrl: probe.serverRelativeUrl,
+    webRelativeUrl: probe.webRelativeUrl, defaultViewId: probe.defaultViewId,
+    defaultViewUrl: probe.defaultViewUrl,
+  });
+  const bindingRequested = [];
+  for (const b of bindingControls) {
+    const opts = { entry: b.entry, properties: b.binding.properties, spc: b.binding.spc,
+      dataVersion: b.binding.dataVersion };
+    const block = webPartBlock(b.cd, opts);
+    canvas += block;
+    bindingRequested.push({ label: b.label, component: b.component, entry: b.entry, id: b.cd.id,
+      target: bindingTarget(b.target), controlData: b.cd, webPartData: webPartData(b.cd, opts),
+      canvas: block });
   }
   canvas += "</div>";
 
@@ -273,15 +559,17 @@
   // persisted != requested forever (review P2-2, 2026-09-06). The canvas
   // is exactly "<div>" + blocks + "</div>", so strip that one wrapper close.
   const wrapperClose = "</div>";
-  const controlDataOf = (block) => {
+  const attributeJson = (block, attr) => {
     try {
       const el = new DOMParser().parseFromString(block, "text/html")
-        .querySelector("[data-sp-controldata]");
-      return JSON.parse(el.getAttribute("data-sp-controldata"));
+        .querySelector("[" + attr + "]");
+      return JSON.parse(el.getAttribute(attr));
     } catch {
       return null;
     }
   };
+  const controlDataOf = (block) => attributeJson(block, "data-sp-controldata");
+  const webPartDataOf = (block) => attributeJson(block, "data-sp-webpartdata");
   // Every control of a stored canvas, in order, as {id, controlData, canvas}.
   const persistedControls = (storedCanvas) => {
     const tail = storedCanvas.endsWith(wrapperClose)
@@ -308,6 +596,25 @@
   }
   const stylePersisted = persistedFor(storedBlocks, styleRequested);
   const sectionPersisted = persistedFor(storedBlocks, sectionRequested);
+  // 4a'. The M5 probes read back the same way; the property and binding
+  //      rows also decode the stored webpartdata, so the Python side can
+  //      judge a value at a path without re-parsing the block. `present`
+  //      tells a stored null apart from a dropped key.
+  const propertyPersisted = [];
+  for (const p of propertyRequested) {
+    const kept = storedBlocks.find(b => b.id === p.id);
+    if (!kept) continue;
+    const wpd = webPartDataOf(kept.canvas);
+    const props = (wpd && wpd.properties) || {};
+    const present = hasOwn(props, p.propertyPath);
+    propertyPersisted.push({ id: p.id, propertyPath: p.propertyPath, present: present,
+      storedValue: present ? props[p.propertyPath] : null, controlData: kept.controlData,
+      webPartData: wpd, canvas: kept.canvas });
+  }
+  const layoutPersisted = persistedFor(storedBlocks, layoutRequested);
+  const bindingPersisted = persistedFor(storedBlocks, bindingRequested).map(b => ({
+    label: b.label, id: b.id, controlData: b.controlData, webPartData: webPartDataOf(b.canvas),
+    canvas: b.canvas }));
 
   // 4b. The other write path. The MERGE above stores CanvasContent1 as sent
   //     (measured 2026-09-06: byte-identical for web parts, ':' rewritten in
@@ -384,22 +691,46 @@
     { method: "POST", headers: { Accept: VERBOSE, "X-RequestDigest": await getDigest() } }
   );
 
+  // 5a. Recycle the M5 fixture lists (2b), after the page that bound to
+  //     them. Each outcome is recorded on its fixture row; a refusal is a
+  //     finding for the operator (the list is left in place), not a throw.
+  for (const probe of probeLists) {
+    if (!probe.id) continue;
+    try {
+      const res = await fetchWithRetry(
+        API("web/lists(guid'" + probe.id + "')/recycle"),
+        { method: "POST", headers: { Accept: VERBOSE, "X-RequestDigest": await getDigest() } }
+      );
+      probe.recycled = res.ok;
+      probe.recycleStatus = res.status;
+      if (!res.ok) {
+        probe.recycleReason = spError(await res.text().catch((e) => "body unreadable: " + bounded(e)));
+      }
+    } catch (err) {
+      probe.recycled = false;
+      probe.recycleReason = bounded(err);
+    }
+  }
+
   // 6. Download the discovery document.
-  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
   const discovery = {
     schema: "formwork.discovery/v1",
     discoveredAt: new Date().toISOString(),
     web: {
-      url: location.origin + (web.d.ServerRelativeUrl === "/" ? "" : web.d.ServerRelativeUrl),
+      url: location.origin + webRoot,
       id: web.d.Id,
       title: web.d.Title,
     },
     components: components,
     placements: {
-      placedCount: controls.length + textControls.length + styleControls.length + sectionControls.length,
+      placedCount: controls.length + textControls.length + styleControls.length + sectionControls.length
+        + propertyControls.length + layoutControls.length + bindingControls.length,
       textPlacedCount: textControls.length,
       styleSampleCount: styleControls.length,
       sectionSampleCount: sectionControls.length,
+      propertySampleCount: propertyControls.length,
+      layoutVariantCount: layoutControls.length,
+      listBindingCount: bindingControls.length,
       requestedCanvasChars: canvas.length,
       storedCanvasChars: stored.length,
       storedControlCount: (stored.match(/data-sp-canvascontrol/g) || []).length,
@@ -443,6 +774,26 @@
             "question outside this readback." },
       ],
     },
+    // Additive (schema stays v1): the M5 probes, each requested/persisted
+    // pair matched by control id on the Python side (catalogue.py), with
+    // what this run could not place under `skipped` and the fixture lists'
+    // fate under `fixtures`. Measurement only: no compile gate reads them
+    // until a live run is folded (M5, 2026-09-06).
+    webpartProperties: {
+      requested: propertyRequested,
+      persisted: propertyPersisted,
+      skipped: propertySkipped,
+    },
+    layoutVariants: {
+      requested: layoutRequested,
+      persisted: layoutPersisted,
+    },
+    listBindings: {
+      fixtures: probeLists,
+      requested: bindingRequested,
+      persisted: bindingPersisted,
+      skipped: bindingSkipped,
+    },
     storedCanvas: stored,
   };
   const blob = new Blob([JSON.stringify(discovery, null, 2)],
@@ -460,9 +811,16 @@
     "text controls persisted", textPersisted.length, "of", textRequested.length, "|",
     "style samples persisted", stylePersisted.length, "of", styleRequested.length, "|",
     "section samples persisted", sectionPersisted.length, "of", sectionRequested.length, "|",
+    "property samples persisted", propertyPersisted.length, "of", propertyRequested.length,
+    "(" + propertyPersisted.filter(p => p.present).length + " with the key present) |",
+    "layout variants persisted", layoutPersisted.length, "of", layoutRequested.length, "|",
+    "list bindings persisted", bindingPersisted.length, "of", bindingRequested.length,
+    "(skipped " + bindingSkipped.length + ") |",
     "page-model save:", pageModelSave.ok ? "HTTP " + pageModelSave.status +
       (pageModelSave.bodyApplied ? ", body applied" : ", body NOT applied") +
       (pageModelSave.probeControlsUnchanged ? ", probe controls unchanged" : ", probe controls CHANGED")
       : "refused (" + pageModelSave.status + " " + pageModelSave.reason + ")", "|",
-    "scratch recycled:", recycleRes.ok);
+    "scratch recycled:", recycleRes.ok, "|",
+    "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
+      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
 })().catch(err => { console.error("[formwork] discover failed:", err); });

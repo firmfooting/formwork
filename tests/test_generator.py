@@ -14,6 +14,7 @@ will run. Regeneration is deliberately a separate, explicit act rather than a
 flag on the test run; the friction is the point.
 """
 
+import functools
 import json
 import pathlib
 import re
@@ -32,11 +33,22 @@ EXPECTED_SCHEMA = "formwork.bundle/v1"
 #: Committed golden files: the emitted scripts, byte for byte.
 EXPECTED = pathlib.Path(__file__).parent / "fixtures" / "expected"
 
+#: A payload carrying every character the JSON embedding has to survive:
+#: braces, double quotes, a backslash, an apostrophe, angle brackets, a
+#: closing script tag and a non-ASCII letter. The default apply golden
+#: embeds only "{}", so this second golden is the one that pins the
+#: embedding (review P3-2 / P3-4, 2026-09-06).
+APPLY_PAYLOAD_NAME = "Bob's <page>"
+APPLY_PAYLOAD = json.dumps(
+    {"title": APPLY_PAYLOAD_NAME, "canvas": '<div>{"k": 1} \\ </script> ü</div>'}
+)
+
 #: Every generated script, by the name of its golden file.
 GENERATORS = {
     "extract": generate_extract_script,
     "discover": generate_discover_script,
     "apply": generate_apply_script,
+    "apply-payload": functools.partial(generate_apply_script, APPLY_PAYLOAD_NAME, APPLY_PAYLOAD, 1),
 }
 
 
@@ -246,6 +258,110 @@ class TestDiscoverScript:
         for topic in ("theme", "section-background", "section-spacing", "rendering"):
             assert f'topic: "{topic}"' in block, topic
 
+    def test_script_places_each_representative_part_twice_with_one_property_changed(self):
+        """M5 (1): six parts, a default and a modified instance each, the
+        modified one carrying ONE flat property, requested and persisted
+        paired by control id under webpartProperties. The stored value at
+        the path is decoded on the JS side so the Python side judges a
+        value, not a block. ListWebPart stands in for DocumentLibraryWebPart,
+        which the site's catalogue does not carry."""
+        script = generate_discover_script()
+        start = script.index("const PROPERTY_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        for alias in ("NewsWebPart", "QuickLinksWebPart", "ImageWebPart", "EventsWebPart",
+                      "HeroWebPart", "ListWebPart"):
+            assert f'component: "{alias}"' in samples, alias
+        assert samples.count("path:") == 6
+        # Types spread: boolean, enum, text with a ':' (the measured rewrite),
+        # numeric string, boolean.
+        assert 'path: "showChrome", value: false' in samples
+        assert 'path: "captionText", value: "Formwork caption probe: image"' in samples
+        assert 'path: "heroLayoutThreshold", value: "320"' in samples
+        assert 'for (const variant of ["default", "modified"])' in script
+        assert 'padId("0005", propertyControls.length + 1)' in script
+        assert "webPartBlock(p.cd, { properties: p.properties })" in script
+        assert "storedValue: present ? props[p.propertyPath] : null" in script
+        assert re.search(
+            r"webpartProperties: \{\n\s*requested: propertyRequested,\n\s*"
+            r"persisted: propertyPersisted,\n\s*skipped: propertySkipped,",
+            script,
+        )
+        # The absent part is a finding, not a throw.
+        assert "propertySkipped.push({ component: sample.component," in script
+
+    def test_script_places_the_one_third_layouts_and_a_column_two_control(self):
+        """M5 (2): 8/4 and 4/8 splits, and a 4/8 split whose column-2
+        control is written before its column-1 control, each control
+        requested/persisted by id under layoutVariants."""
+        script = generate_discover_script()
+        start = script.index("const LAYOUT_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        assert 'section: "split-8-4", factors: [8, 4], columns: [1]' in samples
+        assert 'section: "split-4-8", factors: [4, 8], columns: [1]' in samples
+        assert 'section: "split-4-8-two", factors: [4, 8], columns: [2, 1]' in samples
+        assert 'padId("0006", layoutControls.length + 1)' in script
+        assert "sectionFactor: section.factors[col - 1]" in script
+        assert "const layoutPersisted = persistedFor(storedBlocks, layoutRequested);" in script
+        assert re.search(
+            r"layoutVariants: \{\n\s*requested: layoutRequested,\n\s*persisted: layoutPersisted,",
+            script,
+        )
+
+    def test_script_binds_parts_to_two_fixture_lists_it_creates_and_recycles(self):
+        """M5 (3): a custom list and a document library created BEFORE the
+        scratch page with their real ids, URLs and default view read from
+        web/lists; the library and list entries of ListWebPart bound to
+        each, Quick links pointed at each default view; both recycled AFTER
+        the scratch page and before the download, each outcome recorded."""
+        script = generate_discover_script()
+        assert 'API("web/lists")' in script
+        assert '{ key: "list", title: "Formwork Probe Source", baseTemplate: 100 }' in script
+        assert '{ key: "library", title: "Formwork Probe Docs", baseTemplate: 101 }' in script
+        assert '__metadata: { type: "SP.List" }' in script
+        assert "?$select=Id,Title,DefaultViewUrl,RootFolder/ServerRelativeUrl," in script
+        assert "DefaultView/Id" in script
+        assert "&$expand=RootFolder,DefaultView" in script
+        # The measured binding shape (collabhome.bundle.json, 2026-09-05),
+        # filled from the fixture, never guessed.
+        for key in (
+            "selectedListId: probe.id",
+            "selectedListUrl: probe.serverRelativeUrl",
+            "webRelativeListUrl: probe.webRelativeUrl",
+            "webpartHeightKey: 4",
+            "selectedViewId: probe.defaultViewId",
+            "searchablePlainTexts: { listTitle: probe.title }",
+            '"items[0].sourceItem.url": location.origin + probe.defaultViewUrl',
+            '"items[0].title": probe.title',
+        ):
+            assert key in script, key
+        start = script.index("const BINDING_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        assert samples.count("label:") == 6
+        assert samples.count('target: "library"') == 3
+        assert samples.count('target: "list"') == 3
+        assert samples.count("library: true") == 2
+        assert samples.count("library: false") == 2
+        assert 'padId("0007", bindingControls.length + 1)' in script
+        assert re.search(
+            r"listBindings: \{\n\s*fixtures: probeLists,\n\s*requested: bindingRequested,\n\s*"
+            r"persisted: bindingPersisted,\n\s*skipped: bindingSkipped,",
+            script,
+        )
+        # Fixtures before the page; page recycled, then the lists, then the download.
+        assert script.index('API("web/lists")') < script.index("await createSitePage(SCRATCH)")
+        page_recycle = script.index('")/recycle"')
+        list_recycle = script.index("')/recycle\"")
+        assert page_recycle < list_recycle < script.index("URL.createObjectURL")
+        # Non-fatal at both ends, with the server's reason.
+        assert "probe.reason = spError(" in script
+        assert "probe.recycleReason = spError(" in script
+        assert "bindingSkipped.push({ label: s.label," in script
+        # The M1/M3 web-part blocks still go through the same builder with
+        # no options, so their bytes are unchanged by the M5 overrides.
+        assert "const block = webPartBlock(s.cd);" in script
+        assert "Object.assign({}, entry.properties || {}, o.properties || {})" in script
+        assert 'schema: "formwork.discovery/v1"' in script
+
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")
 class TestApplyScript:
@@ -283,6 +399,16 @@ class TestApplyScript:
         assert '"X"' in script
         assert json.dumps('{"k":1}') in script  # JSON-embedded, quotes escaped
 
+    def test_awkward_payload_decodes_back_to_itself(self):
+        # The golden pins the bytes; this pins the meaning: the literal the
+        # script parses at runtime is the payload, character for character.
+        script = GENERATORS["apply-payload"]()
+        literal = re.search(r'JSON\.parse\("(.+)"\);', script)
+        assert literal, "no embedded payload literal found"
+        assert json.loads(f'"{literal.group(1)}"') == APPLY_PAYLOAD
+        assert f"const PAGE_NAME = {json.dumps(APPLY_PAYLOAD_NAME)};" in script
+        assert "const PROMOTED_STATE = 1;" in script
+
 
 @pytest.mark.parametrize("name", sorted(GENERATORS))
 class TestTransportFacts:
@@ -290,7 +416,8 @@ class TestTransportFacts:
 
     One pin per fact, on every generated script, so the prelude cannot lose a
     fact without a test going red. Each names the partial the fact came from;
-    the prelude comment in generator.py carries the same citation.
+    the Jinja comments at the top of _prelude.js.j2 carry the same citations
+    (pinned by test_prelude_cites_the_four_transport_facts_with_dates).
     """
 
     def test_throttle_is_detected_on_the_final_url_not_the_status(self, name):
@@ -394,6 +521,60 @@ def test_site_pages_title_is_named_only_by_the_display_layer():
         if 'listByTitle("Site Pages")' in path.read_text(encoding="utf-8")
     )
     assert emitters == ["_prelude.js.j2"]
+
+
+def test_prelude_cites_the_four_transport_facts_with_dates():
+    """The citations are Jinja comments, stripped from every emitted script,
+    so no golden or script pin can hold them (review P3-8, 2026-09-06). Read
+    the template: each fact names its dbml-sharepoint partial and a date."""
+    prelude = (PACKAGE / "templates" / "_prelude.js.j2").read_text(encoding="utf-8")
+    facts = re.findall(
+        r"Transport fact (\d) \(dbml-sharepoint (_\w+\.js\.j2):[^,]+,\s+"
+        r"(?:read|live finding)\s+(20\d\d-\d\d-\d\d)\)",
+        prelude,
+    )
+    assert facts == [
+        ("1", "_http.js.j2", "2026-09-06"),
+        ("2", "_http.js.j2", "2026-07-24"),
+        ("3", "_digest_cached.js.j2", "2026-09-06"),
+        ("4", "_site_guard.js.j2", "2026-09-06"),
+    ]
+    # And none of it reaches the operator's paste-in.
+    for name, generate in GENERATORS.items():
+        assert "Transport fact" not in generate(), name
+
+
+def test_prelude_carries_no_post_json_helper():
+    """postJson had no caller in any script once getDigest grew its own
+    guarded fetch; it is gone from the prelude (review P3-1, 2026-09-06)."""
+    for name, generate in GENERATORS.items():
+        assert "postJson" not in generate(), name
+
+
+def test_apply_mismatch_names_the_page_it_leaves_behind_and_never_recycles_it():
+    """The byte-exact check runs after the page is created and merged, so a
+    mismatch leaves a page behind. The thrown error says the page exists,
+    names its item id and URL, and states that Formwork does not recycle
+    it; nothing in the apply script calls recycle (review P1-1, 2026-09-06).
+    The comparison itself stays strict: compile emits ':' as '&#58;' in text
+    HTML (test_dsl, test_styling_evidence), so nothing here folds."""
+    for name in ("apply", "apply-payload"):
+        script = GENERATORS[name]()
+        assert "stored.CanvasContent1 === PAYLOAD.canvas" in script, name
+        assert 'The page EXISTS with what SharePoint stored: item " + created.id' in script, name
+        assert "location.origin + created.url" in script, name
+        assert "Formwork does not recycle it; keep it or recycle it yourself." in script, name
+        assert "recycle(" not in script and "/recycle" not in script, name
+        assert script.index("[formwork] page created:") < script.index("The page EXISTS"), name
+
+
+def test_extract_bundle_carries_no_web_part_list():
+    """The bundle's web parts are read from its canvas; the extract script
+    writes no ``webParts`` key (it only ever wrote an empty list, and a
+    rewriter that read it rewrote nothing: review P1-2, 2026-09-06)."""
+    script = generate_extract_script()
+    assert "webParts" not in script
+    assert "page: page,\n    sections: [],\n  };" in script
 
 
 def test_extract_filter_literal_doubles_apostrophes():

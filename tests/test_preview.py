@@ -91,6 +91,17 @@ class TestBuildPreview:
         with pytest.raises(DslError, match="part 1: line 1: tables"):
             build_preview({"page": "P", "sections": [{"parts": [{"text": "a | b"}]}]})
 
+    def test_preview_validates_emphasis_like_the_compiler(self):
+        # Same shared walk (dsl.placements), so a spec the compiler refuses
+        # never previews as if it were fine.
+        bad_value = {"component": "NewsWebPart", "emphasis": 7}
+        with pytest.raises(DslError, match="zoneEmphasis"):
+            build_preview({"page": "P", "sections": [{"parts": [bad_value]}]})
+        with pytest.raises(DslError, match=r"section 1: section-level emphasis.*SavePage"):
+            build_preview({"page": "P", "sections": [{"emphasis": 2, "parts": []}]})
+        spec = {"page": "P", "sections": [{"parts": [{"component": "NewsWebPart", "emphasis": 2}]}]}
+        assert build_preview(spec).sections[0].columns[0].parts[0].alias == "NewsWebPart"
+
 
 class TestRenderPreview:
     def test_sections_render_in_order_with_their_types(self):
@@ -189,6 +200,21 @@ class TestPreviewCommand:
         )
         assert rc == 0
         assert '<p class="title">News</p>' in out.read_text(encoding="utf-8")
+
+    def test_a_refused_spec_is_one_error_line_not_a_traceback(self, tmp_path, capsys):
+        # Review P3-6 (2026-09-06): main() catches DslError and prints the
+        # message; the operator sees the part and the reason, nothing else.
+        spec_path = tmp_path / "page.yaml"
+        spec_path.write_text(
+            "page: P\nsections:\n  - parts:\n      - text: 'a | b'\n", encoding="utf-8"
+        )
+        out = tmp_path / "preview.html"
+        rc = main(["preview", str(spec_path), "--out", str(out)])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == "error: part 1: line 1: tables (and any '|') are not supported\n"
+        assert not out.exists()
 
 
 def test_preview_of_malicious_html_part_is_refused():

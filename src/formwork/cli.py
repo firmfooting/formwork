@@ -11,6 +11,7 @@ import yaml
 
 from . import __version__
 from .bundle import parse_bundle
+from .canvas import Canvas
 from .catalogue import parse_discovery
 from .dsl import DslError, compile_page
 from .generator import (
@@ -19,7 +20,7 @@ from .generator import (
     generate_extract_script,
 )
 from .preview import build_preview, render_preview
-from .refs import apply_plan, build_plan, scan
+from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
 
 
 def _cmd_gen_extract(_args: argparse.Namespace) -> int:
@@ -29,7 +30,8 @@ def _cmd_gen_extract(_args: argparse.Namespace) -> int:
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
     bundle = parse_bundle(_read_json(args.bundle))
-    refs = scan(bundle)
+    canvas = Canvas.parse(bundle.canvas_html or "")
+    refs = scan_canvas(canvas)
     if args.json:
         print(
             json.dumps(
@@ -46,11 +48,16 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    print(f"page: {bundle.source.page_path}  ({len(bundle.web_parts)} web parts)")
+    web_parts = len(canvas.web_part_controls())
+    print(f"page: {bundle.source.page_path}  ({web_parts} web parts)")
     print(f"{'kind':<8} {'web part':<20} location")
     for r in refs:
         print(f"{r.kind:<8} {r.web_part_title:<20} {r.location} = {str(r.value)[:60]}")
-    print(f"\n{len(refs)} site-bound refs found.")
+    report_only = sum(1 for r in refs if r.kind in REPORT_ONLY_KINDS)
+    print(
+        f"\n{len(refs)} site-bound refs found"
+        + (f" ({report_only} link/image: detected, not rewritten)." if report_only else ".")
+    )
     return 0
 
 
@@ -77,15 +84,19 @@ def _cmd_process(args: argparse.Namespace) -> int:
     print(
         f"payload written: {args.out} "
         f"({len(result.canvas_html)} chars of canvas, "
-        f"{len(plan.applied)} refs rewritten, {len(plan.unresolved)} unresolved)"
+        f"{len(plan.applied)} refs resolved, {len(result.rewritten)} control(s) rewritten, "
+        f"{len(plan.unresolved)} unresolved)"
     )
     if plan.unresolved:
         print("unresolved site-bound values (left as extracted):", file=sys.stderr)
         for r in plan.unresolved:
-            print(f"  - [{r.kind}] {r.location} = {str(r.value)[:60]}", file=sys.stderr)
+            note = "  (report-only)" if r.kind in REPORT_ONLY_KINDS else ""
+            print(f"  - [{r.kind}] {r.location} = {str(r.value)[:60]}{note}", file=sys.stderr)
         print(
             "resolve them by adding 'lists' / 'textOverrides' entries to the "
-            "mapping file, or accept them and copy the apply script.",
+            "mapping file, or accept them and copy the apply script. link and "
+            "image values are report-only: detected, not rewritten (no mapping "
+            "key is measured for them).",
             file=sys.stderr,
         )
     return 0
@@ -146,9 +157,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         f"{len(result.parts)} parts)"
     )
     for part in result.parts:
+        emphasis = part.get("emphasis") or {}
+        styled = f", zoneEmphasis {emphasis['zoneEmphasis']}" if emphasis else ""
         print(
             f"  section {part['section']}, column {part['column']}: "
-            f"{part['component']} ({part['title']})"
+            f"{part['component']} ({part['title']}{styled})"
         )
     return 0
 

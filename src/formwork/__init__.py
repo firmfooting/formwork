@@ -1,4 +1,6 @@
-"""Formwork: SharePoint page copier."""
+"""Formwork: declarative SharePoint modern pages, and a page copier."""
 
-__version__ = "0.2.0"
+#: Kept in step with ``[project].version`` in pyproject.toml by
+#: tests/test_version.py; the paste-in goldens embed this string.
+__version__ = "0.3.0"
 BUNDLE_SCHEMA = "formwork.bundle/v1"

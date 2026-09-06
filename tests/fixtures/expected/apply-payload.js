@@ -1,4 +1,5 @@
-// formwork extract v0.3.0 — run from the source page itself.
+// formwork apply v0.3.0 — run from any page of the TARGET site.
+// Creates the page, writes the embedded canvas via REST, verifies.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
   const VERBOSE = "application/json;odata=verbose";
@@ -177,58 +178,67 @@
     };
   }
 
-  const PAGE_PATH = location.pathname.match(/SitePages\/[^/]+\.aspx$/i)[0];
+  const PAGE_NAME = "Bob's <page>";
+  const PAYLOAD = JSON.parse("{\"title\": \"Bob's <page>\", \"canvas\": \"<div>{\\\"k\\\": 1} \\\\ </script> \\u00fc</div>\"}");
+  const PROMOTED_STATE = 1;
 
-  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
-  const site = await getJson(API("site?$select=Id,Url"));
-  const listId = (await getJson(PAGES + "?$select=Id")).d.Id;
+  // 1. Create the page through the sitepages API, then set item fields.
+  const created = await createSitePage(PAGE_NAME);
+  await created.setFields({ PromotedState: PROMOTED_STATE });
 
-  // location.pathname is percent-encoded; decode before OData-quoting, or
-  // `Bob's%20page.aspx` is compared literally and matches zero rows
-  // (review finding P2-1, 2026-09-06).
-  const fileName = decodeURIComponent(PAGE_PATH.replace(/^SitePages\//i, ""));
-  const pageRes = await fetchWithRetry(
-    PAGES + "/items?$filter=" +
-      encodeURIComponent("FileLeafRef eq '" + odataLiteral(fileName) + "'") +
-      "&$select=Id,Title,Created,Modified,CanvasContent1,LayoutWebpartsContent," +
-      "PageLayoutType,PromotedState,BannerImageUrl,Description,AuthorId,EditorId,FileLeafRef",
+  // 2. Write the canvas with MERGE + etag concurrency control.
+  const itemRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")",
     { headers: { Accept: VERBOSE } }
   );
-  if (!pageRes.ok) throw await failed("page query", pageRes);
-  const pages = (await pageRes.json()).d.results;
-  if (pages.length !== 1) {
-    throw new Error("expected 1 page for " + PAGE_PATH + ", got " + pages.length);
+  if (!itemRes.ok) throw await failed("read item", itemRes);
+  const etag = (await itemRes.json()).d.__metadata.etag;
+
+  const mergeRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")",
+    {
+      method: "POST",
+      headers: {
+        Accept: VERBOSE,
+        "Content-Type": "application/json;odata=verbose",
+        "X-RequestDigest": await getDigest(),
+        "X-HTTP-Method": "MERGE",
+        "If-Match": etag,
+      },
+      body: JSON.stringify({
+        __metadata: { type: "SP.Data.SitePagesItem" },
+        CanvasContent1: PAYLOAD.canvas,
+        Title: PAYLOAD.title,
+      }),
+    }
+  );
+  if (!mergeRes.ok) throw await failed("canvas write", mergeRes);
+
+  // 4. Verify: read back what SharePoint actually stored.
+  const verifyRes = await fetchWithRetry(
+    PAGES + "/items(" + created.id + ")?$select=CanvasContent1,Title",
+    { headers: { Accept: VERBOSE } }
+  );
+  if (!verifyRes.ok) throw await failed("verify read", verifyRes);
+  const stored = (await verifyRes.json()).d;
+  const storedLen = (stored.CanvasContent1 || "").length;
+  const byteExact = stored.CanvasContent1 === PAYLOAD.canvas;
+  console.log("[formwork] page created:",
+    location.origin + created.url,
+    "| canvas stored:", storedLen, "chars",
+    "| byte-exact:", byteExact);
+  if (!byteExact) {
+    // The page exists: it was created and merged before this check ran.
+    // Nothing here recycles it (an unmeasured auto-delete would be a new
+    // behaviour); keeping or recycling it is the operator's call. Compile
+    // spells ':' as '&#58;' inside text HTML, the stored spelling measured
+    // 2026-09-06, so a mismatch here is a real difference, not that rewrite.
+    throw new Error(
+      "canvas mismatch: sent " + PAYLOAD.canvas.length + " chars, stored " + storedLen +
+      ". The page EXISTS with what SharePoint stored: item " + created.id + " at " +
+      location.origin + created.url +
+      ". Formwork does not recycle it; keep it or recycle it yourself."
+    );
   }
-  const page = pages[0];
-
-  const webPath = web.d.ServerRelativeUrl === "/"
-    ? "" : web.d.ServerRelativeUrl.replace(/\/$/, "");
-  const bundle = {
-    schema: SCHEMA,
-    extractedAt: new Date().toISOString(),
-    source: {
-      webUrl: location.origin + webPath,
-      webPath: webPath || "/",
-      pagePath: "SitePages/" + page.FileLeafRef,
-      pageItemId: page.Id,
-      listId: listId,
-      webId: web.d.Id,
-      siteId: site.d.Id,
-    },
-    meta: { webTitle: web.d.Title, formworkVersion: "0.3.0" },
-    page: page,
-    sections: [],
-  };
-
-  const blob = new Blob([JSON.stringify(bundle, null, 2)],
-                        { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "formwork-bundle.json";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  console.log("[formwork] bundle downloaded:", page.FileLeafRef,
-              "| canvas", (page.CanvasContent1 || "").length, "chars",
-              "| site", PREFIX || "(root)");
-})().catch(err => { console.error("[formwork] extract failed:", err); });
+  console.log("[formwork] verify OK — reload the new page to inspect it.");
+})().catch(err => { console.error("[formwork] apply failed:", err); });

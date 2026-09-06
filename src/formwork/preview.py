@@ -16,13 +16,13 @@ from typing import Any
 from . import __version__
 from .catalogue import Catalogue
 from .dsl import (
-    SECTION_FACTORS,
     DslError,
     Placement,
     page_title,
     part_html,
     placements,
     resolve_component,
+    section_factors,
 )
 from .templating import render_template
 
@@ -58,7 +58,14 @@ class PagePreview:
 
 
 def build_preview(spec: dict[str, Any], cat: Catalogue | None = None) -> PagePreview:
-    """Lay out a spec's sections, columns and parts for rendering."""
+    """Lay out a spec's sections, columns and parts for rendering.
+
+    Geometry comes from the placements' validated factors (one
+    ``section_factors`` call per section), never from re-deriving by
+    ``type``: a ``columns: [8, 4]`` section has no SECTION_FACTORS entry,
+    and previewing it through the type table dropped its column-2 parts
+    (review 2026-09-07 P1-2).
+    """
     title = page_title(spec)
     by_slot: dict[tuple[int, int], list[PreviewPart]] = defaultdict(list)
     for placement in placements(spec):
@@ -67,9 +74,10 @@ def build_preview(spec: dict[str, Any], cat: Catalogue | None = None) -> PagePre
     sections: list[PreviewSection] = []
     for index, section in enumerate(spec["sections"], start=1):
         type_name = section.get("type", "one")
+        factors, _measure = section_factors(section, index)
         columns = tuple(
             PreviewColumn(factor=factor, parts=tuple(by_slot.get((index, column), ())))
-            for column, factor in enumerate(SECTION_FACTORS[type_name], start=1)
+            for column, factor in enumerate(factors, start=1)
         )
         sections.append(PreviewSection(index=index, type=type_name, columns=columns))
     return PagePreview(title=title, sections=tuple(sections), resolved=cat is not None)

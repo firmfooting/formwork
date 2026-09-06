@@ -4,32 +4,72 @@ A modern page is not site-agnostic. Its web parts carry values bound to the
 source site: ``links.baseUrl`` in ``serverProcessedContent``, ``siteId`` and
 ``webId`` properties, list ids and web-relative urls, and searchable plain
 texts a human may want to retitle. Formwork scans them all, plans a rewrite,
-and applies what resolved — leaving anything unresolved untouched so a
+and applies what resolved, leaving anything unresolved untouched so a
 partial mapping degrades to "as extracted" rather than a broken page.
+
+The refs live in the canvas and nowhere else. :func:`scan` reads them from
+each web-part control's ``data-sp-webpartdata`` through the canvas model,
+addressed by the control's ``instanceId`` plus the path inside that data,
+and :func:`apply_plan` writes them back into the same controls in place.
+There is no parallel web-part list: the extract paste-in never filled one,
+and the rewriter that walked it matched controls on the web part's ``id``,
+which is the component type GUID, so two Quick Links on one page both took
+the first entry's data (architecture review P1-2, 2026-09-06). A control is
+re-serialised only when one of its values actually changed; every other
+control keeps its extracted bytes.
 """
 
-import copy
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .bundle import Bundle
-from .canvas import Canvas
+from .canvas import Canvas, Control
 
 # Property names that hold a GUID binding to a list.
 _LIST_ID_KEYS = {"selectedListId", "listId"}
 _LIST_URL_KEYS = {"selectedListUrl", "webRelativeListUrl", "listUrl"}
 _LIST_VIEW_KEYS = {"selectedViewId", "viewId"}
 
+#: Which key of a ``lists`` mapping entry each list-bound property takes.
+_LIST_FIELDS = {
+    "selectedListId": "id",
+    "listId": "id",
+    "selectedListUrl": "url",
+    "listUrl": "url",
+    "webRelativeListUrl": "webRelativeUrl",
+    "selectedViewId": "viewId",
+    "viewId": "viewId",
+}
 
-@dataclass
+#: Ref kinds a mapping can resolve: ``baseUrl``, ``siteId`` and ``webId`` by
+#: plain replacement, ``list`` through ``lists``, ``text`` through
+#: ``textOverrides``.
+REWRITABLE_KINDS = frozenset({"baseUrl", "siteId", "webId", "list", "text"})
+
+#: Ref kinds that are detected and reported, never rewritten. No mapping key
+#: exists for them because what a target site wants there is not measured: a
+#: ``links`` entry other than ``baseUrl`` (a Quick Links item's
+#: ``items[n].sourceItem.url``) may be external, page-relative or list-bound,
+#: and an ``imageSources`` entry may be a site asset or a CDN url. They land
+#: in ``Plan.unresolved`` so the operator sees them next to the page.
+REPORT_ONLY_KINDS = frozenset({"link", "image"})
+
+
+@dataclass(frozen=True)
 class Ref:
-    """One site-bound value found on the page."""
+    """One site-bound value found on the page, addressed into the canvas."""
 
-    kind: str  # baseUrl | siteId | webId | list | text | image
-    location: str  # e.g. "webParts[3].properties.selectedListId"
+    kind: str  # baseUrl | siteId | webId | list | text | link | image
+    instance_id: str  # ``instanceId`` of the web-part control carrying it
+    section: str  # properties | links | imageSources | searchablePlainTexts
+    key: str  # the key inside that section, e.g. "selectedListId"
     value: str
     web_part_title: str
+
+    @property
+    def location(self) -> str:
+        """The ref's address, e.g. ``webParts[<instanceId>].properties.selectedListId``."""
+        return f"webParts[{self.instance_id}].{self.section}.{self.key}"
 
 
 @dataclass
@@ -38,55 +78,88 @@ class Plan:
     unresolved: list[Ref] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RewriteResult:
-    web_parts: list[dict[str, Any]]
     canvas_html: str
+    #: ``instanceId`` of every control whose bytes were re-serialised, in
+    #: canvas order; each appears once however many of its refs changed.
+    rewritten: tuple[str, ...]
 
 
-def _spc_entries(
-    bundle: Bundle, section: str
-) -> "list[tuple[int, dict[str, Any], str, Any]]":
-    out: list[tuple[int, dict[str, Any], str, Any]] = []
-    for i, wp in enumerate(bundle.web_parts):
-        spc = wp.get("serverProcessedContent") or {}
-        for key, val in (spc.get(section) or {}).items():
-            out.append((i, wp, key, val))
-    return out
+def _instance_id(control: Control) -> str:
+    """The address of a web-part control: its ``instanceId``.
+
+    Every measured canvas (the CollabHome capture, the discover probe, the
+    compiler's own output) writes the same GUID as the control's ``id`` and
+    the web part's ``instanceId``; the control id is the fallback for a
+    control whose data lacks the key.
+    """
+    data = control.web_part_data or {}
+    instance = data.get("instanceId")
+    if isinstance(instance, str) and instance:
+        return instance
+    control_id = control.control_data.get("id")
+    return control_id if isinstance(control_id, str) else ""
+
+
+def _controls_by_instance(canvas: Canvas) -> dict[str, Control]:
+    """Web-part controls keyed by instanceId, in canvas order.
+
+    Two controls with one instanceId cannot be told apart, so that canvas is
+    refused rather than resolved to whichever came first.
+    """
+    by_id: dict[str, Control] = {}
+    for control in canvas.web_part_controls():
+        instance = _instance_id(control)
+        if not instance:
+            continue
+        if instance in by_id:
+            raise ValueError(
+                f"canvas carries two web-part controls with instanceId {instance!r}"
+            )
+        by_id[instance] = control
+    return by_id
+
+
+def _string_items(section: Any) -> list[tuple[str, str]]:
+    if not isinstance(section, dict):
+        return []
+    return [(str(key), val) for key, val in section.items() if isinstance(val, str)]
+
+
+def _refs_for(instance: str, control: Control) -> list[Ref]:
+    data = control.web_part_data or {}
+    title = control.web_part_title or ""
+    spc = data.get("serverProcessedContent") or {}
+    refs: list[Ref] = []
+
+    def add(kind: str, section: str, key: str, value: str) -> None:
+        refs.append(Ref(kind, instance, section, key, value, title))
+
+    for key, val in _string_items(spc.get("links")):
+        add("baseUrl" if key == "baseUrl" else "link", "links", key, val)
+    for key, val in _string_items(spc.get("imageSources")):
+        add("image", "imageSources", key, val)
+    for key, val in _string_items(spc.get("searchablePlainTexts")):
+        add("text", "searchablePlainTexts", key, val)
+    for key, val in _string_items(data.get("properties")):
+        if key in ("siteId", "webId"):
+            add(key, "properties", key, val)
+        elif key in _LIST_ID_KEYS or key in _LIST_URL_KEYS or key in _LIST_VIEW_KEYS:
+            add("list", "properties", key, val)
+    return refs
 
 
 def scan(bundle: Bundle) -> list[Ref]:
-    """Inventory every site-bound value on the page."""
+    """Inventory every site-bound value on the page, read from its canvas."""
+    return scan_canvas(Canvas.parse(bundle.canvas_html or ""))
+
+
+def scan_canvas(canvas: Canvas) -> list[Ref]:
+    """Inventory every site-bound value in a parsed canvas, control by control."""
     refs: list[Ref] = []
-
-    def add(kind: str, location: str, value: Any, title: str) -> None:
-        refs.append(Ref(kind=kind, location=location, value=value, web_part_title=title))
-
-    for i, wp, key, val in _spc_entries(bundle, "links"):
-        if key == "baseUrl":
-            add("baseUrl", f"webParts[{i}].links.baseUrl", val, wp.get("title", ""))
-        else:
-            add("link", f"webParts[{i}].links.{key}", val, wp.get("title", ""))
-
-    for i, wp, key, val in _spc_entries(bundle, "imageSources"):
-        add("image", f"webParts[{i}].imageSources.{key}", val, wp.get("title", ""))
-
-    for i, wp, key, val in _spc_entries(bundle, "searchablePlainTexts"):
-        add("text", f"webParts[{i}].searchablePlainTexts.{key}", val, wp.get("title", ""))
-
-    for i, wp in enumerate(bundle.web_parts):
-        title = wp.get("title", "")
-        for key, val in (wp.get("properties") or {}).items():
-            loc = f"webParts[{i}].properties.{key}"
-            if key in ("siteId", "webId") and isinstance(val, str):
-                add(key, loc, val, title)
-            elif isinstance(val, str) and (
-                key in _LIST_ID_KEYS
-                or key in _LIST_URL_KEYS
-                or key in _LIST_VIEW_KEYS
-            ):
-                add("list", loc, val, title)
-
+    for instance, control in _controls_by_instance(canvas).items():
+        refs.extend(_refs_for(instance, control))
     return refs
 
 
@@ -95,95 +168,84 @@ def build_plan(refs: list[Ref], mapping: dict[str, Any]) -> Plan:
 
     mapping keys:
       baseUrl, siteId, webId  -- plain string replacements
-      lists: {sourceListTitle: {id, url, webRelativeUrl, viewId}}
+      lists: {sourceWebPartTitle: {id, url, webRelativeUrl, viewId}}
       textOverrides: {sourceText: replacement}
+
+    A ref is resolved when the mapping carries a value for it, the empty
+    string included; only an absent entry leaves it unresolved. Refs of a
+    :data:`REPORT_ONLY_KINDS` kind are always unresolved: there is no mapping
+    key for them by design.
     """
     plan = Plan()
     lists: dict[str, Any] = mapping.get("lists") or {}
 
     for ref in refs:
-        new_value = None
-        if ref.kind == "baseUrl":
-            new_value = mapping.get("baseUrl")
-        elif ref.kind == "siteId":
-            new_value = mapping.get("siteId")
-        elif ref.kind == "webId":
-            new_value = mapping.get("webId")
+        new_value: Any = None
+        if ref.kind in ("baseUrl", "siteId", "webId"):
+            new_value = mapping.get(ref.kind)
         elif ref.kind == "list":
-            entry = lists.get(ref.web_part_title)
-            if entry:
-                key = ref.location.rsplit(".", 1)[-1]
-                field_map = {
-                    "selectedListId": "id",
-                    "listId": "id",
-                    "selectedListUrl": "url",
-                    "listUrl": "url",
-                    "webRelativeListUrl": "webRelativeUrl",
-                    "selectedViewId": "viewId",
-                    "viewId": "viewId",
-                }
-                new_value = entry.get(field_map[key])
+            entry = lists.get(ref.web_part_title) or {}
+            new_value = entry.get(_LIST_FIELDS[ref.key])
         elif ref.kind == "text":
             new_value = (mapping.get("textOverrides") or {}).get(ref.value)
+        # REPORT_ONLY_KINDS have no branch: detected, reported, never rewritten.
 
-        if new_value:
-            plan.applied.append((ref, new_value))
-        else:
+        if new_value is None:
             plan.unresolved.append(ref)
+            continue
+        if not isinstance(new_value, str):
+            raise ValueError(
+                f"mapping value for {ref.location} must be a string, "
+                f"got {type(new_value).__name__}"
+            )
+        plan.applied.append((ref, new_value))
 
     return plan
 
 
 def apply_plan(bundle: Bundle, plan: Plan) -> RewriteResult:
-    """Mutate web parts per the plan, then regenerate the canvas.
+    """Write the plan into the bundle's canvas and render it.
 
-    Unresolved refs are left exactly as extracted.
+    Unresolved refs are left exactly as extracted, and so is every control
+    none of whose values changed.
     """
-    web_parts = copy.deepcopy(bundle.web_parts)
-
-    for ref, new_value in plan.applied:
-        wp = web_parts[_parse_index(ref.location)]
-        section, prop = _split_location(ref.location)
-        if section == "properties":
-            wp.setdefault("properties", {})[prop] = new_value
-        elif section == "links":
-            wp.setdefault("serverProcessedContent", {}).setdefault("links", {})[prop] = (
-                new_value
-            )
-        elif section == "imageSources":
-            wp.setdefault("serverProcessedContent", {}).setdefault(
-                "imageSources", {}
-            )[prop] = new_value
-        elif section == "searchablePlainTexts":
-            wp.setdefault("serverProcessedContent", {}).setdefault(
-                "searchablePlainTexts", {}
-            )[prop] = new_value
-
     canvas = Canvas.parse(bundle.canvas_html or "")
-    for control in canvas.web_part_controls():
-        wpd = control.web_part_data
-        if wpd is None:
-            continue
-        for candidate in web_parts:
-            if candidate.get("id") == wpd.get("id"):
-                control.web_part_data = candidate
-                control.mark_dirty()
-                break
-
-    return RewriteResult(
-        web_parts=web_parts,
-        canvas_html=canvas.render(),
-    )
+    rewritten = apply_plan_to_canvas(canvas, plan)
+    return RewriteResult(canvas_html=canvas.render(), rewritten=rewritten)
 
 
-def _parse_index(location: str) -> int:
-    m = re.search(r"webParts\[(\d+)\]", location)
-    if m is None:
-        raise ValueError(f"cannot parse web part index from location: {location!r}")
-    return int(m.group(1))
+def apply_plan_to_canvas(canvas: Canvas, plan: Plan) -> tuple[str, ...]:
+    """Write each applied value into its control's web-part data, in place.
+
+    A control is marked dirty, and so re-serialised on render, only when a
+    value it carries actually changed: a mapping that resolves to the
+    extracted value leaves the control's raw bytes alone. Returns the
+    instanceIds of the controls that changed, in canvas order.
+    """
+    by_id = _controls_by_instance(canvas)
+    changed: set[str] = set()
+    for ref, new_value in plan.applied:
+        control = by_id.get(ref.instance_id)
+        if control is None:
+            raise ValueError(
+                f"plan names control {ref.instance_id!r}, which the canvas does not carry"
+            )
+        if _write(control, ref, new_value):
+            control.mark_dirty()
+            changed.add(ref.instance_id)
+    return tuple(instance for instance in by_id if instance in changed)
 
 
-def _split_location(location: str) -> tuple[str, str]:
-    after = location.split("].", 1)[1]
-    section, prop = after.rsplit(".", 1)
-    return section, prop
+def _write(control: Control, ref: Ref, new_value: str) -> bool:
+    """Set one value on the control's decoded data; True when it differed."""
+    data = control.web_part_data
+    if data is None:
+        raise ValueError(f"control {ref.instance_id!r} carries no web-part data")
+    if ref.section == "properties":
+        target = data.setdefault("properties", {})
+    else:
+        target = data.setdefault("serverProcessedContent", {}).setdefault(ref.section, {})
+    if target.get(ref.key) == new_value:
+        return False
+    target[ref.key] = new_value
+    return True
