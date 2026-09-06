@@ -1,7 +1,10 @@
 """Tests for the component catalogue and the page-spec DSL."""
 
 import copy
+import html
 import json
+import re
+import warnings
 
 import pytest
 
@@ -619,3 +622,312 @@ def test_compile_refuses_a_real_shape_change():
     spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>x</p>"}]}]}
     with pytest.raises(DslError, match="shape has changed"):
         compile_page(spec, cat)
+
+
+def _make_property_sample(component: str, path: str, value):
+    return {
+        "component": component,
+        "id": f"00000000-0000-0000-0002-{abs(hash((component, path))) % 10**12:012d}",
+        "variant": "modified",
+        "propertyPath": path,
+        "oldValue": None,
+        "newValue": value,
+        "canvas": "<x></x>",
+    }
+
+
+def _make_binding_sample(component: str, target: str, list_id: str, list_url: str):
+    return {
+        "label": f"{component}-to-{target}",
+        "component": component,
+        "entry": 0,
+        "id": f"00000000-0000-0000-0003-{abs(hash((component, target))) % 10**12:012d}",
+        "target": target,
+        "listId": list_id,
+        "listUrl": list_url,
+        "canvas": "<x></x>",
+    }
+
+
+M5_DISCOVERY = copy.deepcopy(DISCOVERY) | {
+    "webpartProperties": {
+        "requested": [
+            _make_property_sample("NewsWebPart", "showChrome", False),
+            _make_property_sample("ImageWebPart", "captionText", "A caption"),
+        ],
+        "persisted": [],
+    },
+    "listBindings": {
+        "requested": [
+            _make_binding_sample(
+                "DocumentLibraryWebPart",
+                "probe-docs",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "Shared Documents",
+            ),
+        ],
+        "persisted": [],
+    },
+    "probeLists": [
+        {
+            "key": "probe-docs",
+            "title": "Formwork Probe Docs",
+            "baseTemplate": 101,
+            "created": True,
+            "recycled": True,
+            "reason": "",
+            "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "serverRelativeUrl": "/sites/T/Formwork Probe Docs",
+            "webRelativeUrl": "Formwork Probe Docs",
+            "defaultViewId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        }
+    ],
+}
+
+
+class TestProperties:
+    """The ``properties:`` key on a component part (M5-DSL).
+
+    Measured 2026-09-07 (tests/fixtures/discovery.m5.json,
+    webpartProperties): 12/12 flat property changes survived the item
+    MERGE byte-exact. These tests pin what the compiler makes of them.
+    """
+
+    def spec(self, part, **section):
+        return {"page": "T", "sections": [{"type": "one", "parts": [part], **section}]}
+
+    def control(self, part, cat=None):
+        result = compile_page(self.spec(part), parse_discovery(cat or DISCOVERY))
+        return Canvas.parse(result.canvas).controls[0]
+
+    def test_flat_properties_reach_web_part_data(self):
+        control = self.control({"component": "NewsWebPart", "properties": {"showChrome": False}})
+        assert control.web_part_data["properties"]["showChrome"] is False
+        # Manifest defaults still present underneath.
+        assert control.web_part_data["properties"]["layoutId"] == "Default"
+
+    def test_properties_merge_over_manifest_defaults(self):
+        control = self.control({"component": "NewsWebPart", "properties": {"layoutId": "Compact"}})
+        assert control.web_part_data["properties"]["layoutId"] == "Compact"
+
+    def test_property_round_trips_byte_exactly(self):
+        result = compile_page(
+            self.spec({"component": "NewsWebPart", "properties": {"showChrome": False}}),
+            parse_discovery(DISCOVERY),
+        )
+        parsed = Canvas.parse(result.canvas)
+        assert parsed.render() == result.canvas
+        for control in parsed.controls:
+            control.mark_dirty()
+        assert parsed.render() == result.canvas
+
+    def test_string_values_with_colons_stay_literal_in_web_part_data(self):
+        # The colon fold is a TEXT-control inner-HTML rewrite. M5 measured
+        # webpartdata attributes storing literal colons unchanged: the
+        # binding samples carried webRelativeListUrl values like
+        # "Shared Documents" and the property samples' values persisted
+        # byte-exact. No fold here.
+        control = self.control(
+            {"component": "NewsWebPart", "properties": {"captionText": "Note: see"}}
+        )
+        assert control.web_part_data["properties"]["captionText"] == "Note: see"
+
+    @pytest.mark.parametrize("bad", [[1, 2], {"a": 1}, None])
+    def test_non_scalar_values_refuse(self, bad):
+        with pytest.raises(DslError, match="measured"):
+            self.control({"component": "NewsWebPart", "properties": {"showChrome": bad}})
+
+    def test_type_mismatch_against_measured_sample_refuses(self):
+        # Measured (discovery.m5.json webpartProperties): showChrome is a
+        # bool. A string for a measured-bool path is a spec bug, not a
+        # guess: refuse.
+        with pytest.raises(DslError, match="measured"):
+            self.control(
+                {"component": "NewsWebPart", "properties": {"showChrome": "false"}},
+                cat=M5_DISCOVERY,
+            )
+
+    def test_type_match_against_measured_sample_compiles(self):
+        control = self.control(
+            {"component": "NewsWebPart", "properties": {"showChrome": True}},
+            cat=M5_DISCOVERY,
+        )
+        assert control.web_part_data["properties"]["showChrome"] is True
+
+    def test_unmeasured_component_properties_pass_through(self):
+        # The catalogue is evidence, not a whitelist: components without
+        # measured samples accept any flat scalar.
+        control = self.control({"component": "NewsWebPart", "properties": {"q": 1}})
+        assert control.web_part_data["properties"]["q"] == 1
+
+
+class TestSectionColumns:
+    """``columns:`` on a section (M5-DSL).
+
+    Measured 2026-09-07 (discovery.m5.json layoutVariants): 8/4 and 4/8
+    factors persisted, and controlIndex ordering within split columns
+    persisted (4/4 variants).
+    """
+
+    def spec(self, sections):
+        return {"page": "T", "sections": sections}
+
+    def test_columns_key_sets_factors(self):
+        result = compile_page(
+            self.spec(
+                [
+                    {
+                        "columns": [8, 4],
+                        "parts": [
+                            {"component": "NewsWebPart", "column": 1},
+                            {"component": "NewsWebPart", "column": 2},
+                        ],
+                    }
+                ]
+            ),
+            parse_discovery(DISCOVERY),
+        )
+        cds = re.findall(r'data-sp-controldata="([^"]*)"', result.canvas)
+        positions = [json.loads(html.unescape(cd))["position"] for cd in cds]
+        assert [p["sectionFactor"] for p in positions] == [8, 4]
+
+    def test_four_eight_maps_to_one_third(self):
+        result = compile_page(
+            self.spec([{"columns": [4, 8], "parts": [{"component": "NewsWebPart"}]}]),
+            parse_discovery(DISCOVERY),
+        )
+        assert "sectionFactor&quot;&#58;4" in result.canvas
+
+    def test_columns_and_type_conflict_refuses(self):
+        with pytest.raises(DslError, match="columns"):
+            compile_page(
+                self.spec([{"type": "two", "columns": [8, 4], "parts": []}]),
+                parse_discovery(DISCOVERY),
+            )
+
+    @pytest.mark.parametrize("bad", [[13], [0], [6, 7], [4, 4, 5], [], [6, 6, 6, 6]])
+    def test_illegal_factor_sets_refuse(self, bad):
+        with pytest.raises(DslError, match="factor"):
+            compile_page(
+                self.spec([{"columns": bad, "parts": []}]),
+                parse_discovery(DISCOVERY),
+            )
+
+    def test_unmeasured_but_legal_combo_warns_and_compiles(self):
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result = compile_page(
+            self.spec([{"columns": [5, 7], "parts": [{"component": "NewsWebPart"}]}]),
+            parse_discovery(DISCOVERY),
+        )
+        # Compile succeeds; the measured set is recorded in the compile
+        # output for the operator to see (parts_out carries warnings).
+        assert result.canvas
+
+
+class TestBind:
+    """``bind:`` on a list-bound component part (M5-DSL).
+
+    Measured 2026-09-07 (discovery.m5.json listBindings): selectedListId,
+    selectedListUrl, webRelativeListUrl, selectedViewId all persisted for
+    Document library and List parts bound to list AND library targets.
+    """
+
+    def spec(self, part, **section):
+        return {"page": "T", "sections": [{"type": "one", "parts": [part], **section}]}
+
+    def control(self, part, cat=None):
+        result = compile_page(self.spec(part), parse_discovery(cat or M5_DISCOVERY))
+        return Canvas.parse(result.canvas).controls[0]
+
+    def test_bind_writes_the_measured_key_set(self):
+        control = self.control(
+            {
+                "component": "DocumentLibraryWebPart",
+                "bind": {
+                    "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "listUrl": "Shared Documents",
+                    "viewId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                },
+            }
+        )
+        props = control.web_part_data["properties"]
+        assert props["selectedListId"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        assert props["selectedListUrl"] == "Shared Documents"
+        assert props["webRelativeListUrl"] == "Shared Documents"
+        assert props["selectedViewId"] == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    def test_bind_without_view_omits_selected_view_id(self):
+        control = self.control(
+            {
+                "component": "DocumentLibraryWebPart",
+                "bind": {
+                    "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "listUrl": "Shared Documents",
+                },
+            }
+        )
+        props = control.web_part_data["properties"]
+        assert "selectedViewId" not in props
+
+    def test_bind_key_collision_with_properties_refuses(self):
+        with pytest.raises(DslError, match="collision"):
+            self.control(
+                {
+                    "component": "DocumentLibraryWebPart",
+                    "bind": {"listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "listUrl": "x"},
+                    "properties": {"selectedListId": "zz"},
+                }
+            )
+
+    def test_bad_guid_refuses(self):
+        with pytest.raises(DslError, match="GUID"):
+            self.control(
+                {
+                    "component": "DocumentLibraryWebPart",
+                    "bind": {"listId": "not-a-guid", "listUrl": "x"},
+                }
+            )
+
+    def test_absolute_list_url_refuses(self):
+        for bad in ["/sites/T/Shared Documents", "https://x/sites/T/Shared%20Documents"]:
+            with pytest.raises(DslError, match="web-relative"):
+                self.control(
+                    {
+                        "component": "DocumentLibraryWebPart",
+                        "bind": {
+                            "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            "listUrl": bad,
+                        },
+                    }
+                )
+
+    def test_unknown_bind_keys_refuse(self):
+        with pytest.raises(DslError, match="unknown bind key"):
+            self.control(
+                {
+                    "component": "DocumentLibraryWebPart",
+                    "bind": {
+                        "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "listUrl": "x",
+                        "web": "y",
+                    },
+                }
+            )
+
+    def test_bind_records_in_parts_out(self):
+        result = compile_page(
+            self.spec(
+                {
+                    "component": "DocumentLibraryWebPart",
+                    "bind": {
+                        "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "listUrl": "Shared Documents",
+                    },
+                }
+            ),
+            parse_discovery(M5_DISCOVERY),
+        )
+        part = result.parts[0]
+        assert part["boundTo"]["listId"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        assert part["boundTo"]["listUrl"] == "Shared Documents"

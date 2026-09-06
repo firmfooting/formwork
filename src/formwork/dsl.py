@@ -13,6 +13,8 @@ by the compiler and the preview, so both validate the same way.
 """
 
 import json
+import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -125,6 +127,175 @@ def page_title(spec: dict[str, Any]) -> str:
     return title
 
 
+#: The column factors the M5 layout probe measured persisting through the
+#: item MERGE (tests/fixtures/discovery.m5.json layoutVariants, plus the
+#: M2-era one/two/three defaults the live scratch pages always carried):
+#: 2026-09-07. Any legal factor set compiles; unmeasured sets emit a
+#: warning naming the measured set, because the evidence shows factors
+#: persist generally (4/4 split-order variants kept) while only these
+#: exact shapes are pinned.
+MEASURED_FACTOR_SETS: tuple[tuple[int, ...], ...] = (
+    (12,),
+    (6, 6),
+    (4, 4, 4),
+    (8, 4),
+    (4, 8),
+)
+
+#: The four properties ``bind:`` writes, exactly the key set the M5 binding
+#: probe measured persisting for Document library and List parts
+#: (discovery.m5.json listBindings, 2026-09-07): all six requested binding
+#: blocks came back byte-exact on both list and library targets.
+BIND_KEYS: frozenset[str] = frozenset({"listId", "listUrl", "viewId"})
+
+#: Where those keys land in the web part's ``properties``.
+BIND_TARGET_KEYS: dict[str, str] = {
+    "listId": "selectedListId",
+    "listUrl": "selectedListUrl",
+    "viewId": "selectedViewId",
+}
+
+#: Section geometry: a row of factors must sum to this, each 1-12.
+MAX_COLUMNS = 3
+ROW_SPAN = 12
+
+#: GUID shape for bind ids. Case-insensitive, bare braces tolerated.
+_GUID_RE = re.compile(
+    r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$"
+)
+
+
+def _flat_scalars(properties: Any, ordinal: int) -> dict[str, Any]:
+    """Validated ``properties:`` for one part: flat scalars only.
+
+    Measured (discovery.m5.json webpartProperties, 2026-09-07): flat
+    property paths survive the item MERGE byte-exact. Nested objects and
+    lists were NOT measured, so they refuse rather than guess; the
+    catalogue is evidence, not a whitelist, so unknown names pass.
+    """
+    if properties is None:
+        return {}
+    if not isinstance(properties, dict):
+        raise DslError(f"part {ordinal}: 'properties' must be a mapping of name to value")
+    for name, value in properties.items():
+        if isinstance(value, (dict, list)) or value is None:
+            raise DslError(
+                f"part {ordinal}: properties.{name}: only flat scalar values are"
+                " measured (discovery.m5.json webpartProperties, 2026-09-07:"
+                " 12/12 flat changes persisted byte-exact); nested objects, arrays"
+                " and null are unmeasured and refused."
+            )
+    return dict(properties)
+
+
+def _type_check_against_samples(
+    properties: dict[str, Any], component: Component, cat: Catalogue, ordinal: int
+) -> None:
+    """Refuse type mismatches against the M5 measured samples.
+
+    Where the discovery document carries a property sample for this
+    component (webpartProperties), the measured value's type is the truth
+    about that path: a string for a measured-bool path is a spec bug.
+    Components without samples are unconstrained.
+    """
+    for sample in cat.property_samples_for(component.alias):
+        declared = properties.get(sample.property_path)
+        if declared is None:
+            continue
+        if type(declared) is not type(sample.new_value):
+            raise DslError(
+                f"part {ordinal}: properties.{sample.property_path} must be"
+                f" {type(sample.new_value).__name__} — the M5 probe measured that"
+                f" path carrying {sample.new_value!r}"
+                " (discovery.m5.json webpartProperties, 2026-09-07), got"
+                f" {declared!r}"
+            )
+
+
+def part_bind(part: dict[str, Any], ordinal: int, component: Component) -> dict[str, Any]:
+    """The web-part ``properties`` a part's ``bind:`` key contributes.
+
+    ``bind: {listId, listUrl, viewId?}`` writes the exact key set the M5
+    binding probe measured persisting (selectedListId, selectedListUrl,
+    webRelativeListUrl, selectedViewId — discovery.m5.json listBindings,
+    2026-09-07; 6/6 blocks byte-exact on list and library targets).
+    viewId is optional; listUrl must be web-relative (no leading slash,
+    no absolute URL), ids must be GUID-shaped.
+    """
+    bind = part.get("bind")
+    if bind is None:
+        return {}
+    if not isinstance(bind, dict):
+        raise DslError(f"part {ordinal}: 'bind' must be a mapping (listId, listUrl, viewId?)")
+    unknown = sorted(set(bind) - BIND_KEYS)
+    if unknown:
+        raise DslError(
+            f"part {ordinal}: unknown bind key(s) {', '.join(unknown)}: measured keys are"
+            " listId, listUrl, viewId (discovery.m5.json listBindings, 2026-09-07)"
+        )
+    missing = sorted(BIND_KEYS - {"viewId"} - set(bind))
+    if missing:
+        raise DslError(
+            f"part {ordinal}: bind is missing {', '.join(missing)}: the measured"
+            " binding key set is listId + listUrl (+ optional viewId)"
+        )
+    out: dict[str, Any] = {}
+    for key, target in BIND_TARGET_KEYS.items():
+        if key not in bind:
+            continue
+        value = bind[key]
+        if key in ("listId", "viewId"):
+            if not isinstance(value, str) or not _GUID_RE.match(value):
+                raise DslError(
+                    f"part {ordinal}: bind.{key} must be a GUID, got {value!r}"
+                    " (the probe bound real ids read from _api/web/lists)"
+                )
+            out[target] = value
+            continue
+        # listUrl: web-relative. The measured values were container names
+        # ("Shared Documents") and library URLs without a leading slash.
+        if not isinstance(value, str) or not value or value.startswith("/") or "://" in value:
+            raise DslError(
+                f"part {ordinal}: bind.listUrl must be web-relative (e.g."
+                f" 'Shared Documents'), got {value!r}. Absolute URLs and leading"
+                " slashes are not what the probe measured storing."
+            )
+        out[target] = value
+        out["webRelativeListUrl"] = value
+    return out
+
+
+def section_factors(section: dict[str, Any], index: int) -> tuple[tuple[int, ...], str]:
+    """A section's column factors, from ``columns:`` or the named type."""
+    explicit = section.get("columns")
+    type_name = section.get("type", "one")
+    if explicit is not None and "type" in section:
+        raise DslError(
+            f"section {index}: give 'type' or 'columns', not both"
+            f" (type {type_name!r} means factors {SECTION_FACTORS[type_name]})"
+        )
+    if explicit is not None:
+        if not isinstance(explicit, list) or not 1 <= len(explicit) <= MAX_COLUMNS:
+            raise DslError(
+                f"section {index}: columns must be 1-3 factors, got {explicit!r}"
+            )
+        try:
+            factors = tuple(int(f) for f in explicit)
+        except (TypeError, ValueError):
+            raise DslError(f"section {index}: columns must be integers, got {explicit!r}") from None
+        if any(not 1 <= f <= ROW_SPAN for f in factors) or sum(factors) != ROW_SPAN:
+            raise DslError(
+                f"section {index}: illegal factor set {factors!r}: each factor is"
+                " 1-12 and the row sums to 12"
+            )
+        measured = factors in MEASURED_FACTOR_SETS
+        return factors, ("measured" if measured else "unmeasured")
+    if type_name not in SECTION_FACTORS:
+        known = ", ".join(sorted(SECTION_FACTORS))
+        raise DslError(f"unknown section type {type_name!r} (known: {known})")
+    return tuple(SECTION_FACTORS[type_name]), "measured"
+
+
 def placements(spec: dict[str, Any]) -> list[Placement]:
     """Walk a spec's sections and parts, validating shape and geometry."""
     sections = spec.get("sections")
@@ -143,10 +314,20 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
             if key in section:
                 raise DslError(f"section {s_index}: {reason}")
         type_name = section.get("type", "one")
-        if type_name not in SECTION_FACTORS:
+        factors, factor_measure = section_factors(section, s_index)
+        if factor_measure == "unmeasured":
+            measured = " / ".join(
+                str(list(f)) for f in MEASURED_FACTOR_SETS if len(f) == len(factors)
+            )
+            warnings.warn(
+                f"section {s_index}: factor set {list(factors)} is legal but unmeasured"
+                f" (measured sets of this width: {measured} — discovery.m5.json"
+                " layoutVariants, 2026-09-07); compiling anyway.",
+                stacklevel=2,
+            )
+        if type_name not in SECTION_FACTORS and "columns" not in section:
             known = ", ".join(sorted(SECTION_FACTORS))
             raise DslError(f"unknown section type {type_name!r} (known: {known})")
-        factors = tuple(SECTION_FACTORS[type_name])
         for p_index, part in enumerate(section.get("parts") or [], start=1):
             ordinal += 1
             if not isinstance(part, dict):
@@ -276,7 +457,11 @@ def _control_id(placement: Placement) -> str:
     return f"00000000-0000-0000-0000-{placement.ordinal:012d}"
 
 
-def _control_for(component: Component, placement: Placement) -> Control:
+def _control_for(
+    component: Component,
+    placement: Placement,
+    cat: Catalogue | None = None,
+) -> Control:
     """Build one web-part canvas control for a spec part.
 
     The control data is the shape the discover probe sends for a web-part
@@ -306,7 +491,8 @@ def _control_for(component: Component, placement: Placement) -> Control:
         "serverProcessedContent": {},
         "dataVersion": "1.0",
         "properties": dict(component.default_properties)
-        | dict(part.get("properties") or {}),
+        | _flat_scalars(part.get("properties"), placement.ordinal)
+        | part_bind(part, placement.ordinal, component),
     }
     open_tag = (
         '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
@@ -437,7 +623,21 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
             continue
         component = resolve_component(placement.part["component"], cat)
         _check_placeable(component)
-        controls.append(_control_for(component, placement))
+        declared_properties = _flat_scalars(
+            placement.part.get("properties"), placement.ordinal
+        )
+        bind_props = part_bind(placement.part, placement.ordinal, component)
+        overlap = sorted(set(declared_properties) & set(bind_props))
+        if overlap:
+            raise DslError(
+                f"part {placement.ordinal}: bind writes {', '.join(overlap)} which"
+                " 'properties' also sets; the measured binding key set owns those"
+                " names — remove them from 'properties' (collision)"
+            )
+        if cat is not None:
+            _type_check_against_samples(declared_properties, component, cat, placement.ordinal)
+        controls.append(_control_for(component, placement, cat))
+        bind_block = placement.part.get("bind") or None
         parts_out.append(
             {
                 "kind": "component",
@@ -447,6 +647,10 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
             }
             | where
         )
+        if bind_block:
+            parts_out[-1]["boundTo"] = {
+                key: bind_block[key] for key in ("listId", "listUrl", "viewId") if key in bind_block
+            }
 
     canvas = Canvas(controls=controls, preamble="<div>")
     return CompiledPage(
