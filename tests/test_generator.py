@@ -115,10 +115,12 @@ class TestDiscoverScript:
     def test_script_places_two_known_text_controls(self):
         # A text block is not a web part: controlType 4, no webPartId, the
         # HTML as inner content of a data-sp-rte child (the shape PnP sends).
+        # One builder for every text control on the page (the M1 samples,
+        # the M3 style samples, the page-model marker): one literal.
         script = generate_discover_script()
         assert script.count("controlType: 4") == 1
         assert "editorType: \"CKEditor\"" in script
-        assert "'<div data-sp-rte=\"\">' + t.html + '</div></div>'" in script
+        assert "'<div data-sp-rte=\"\">' + html + '</div></div>'" in script
         # Two samples, with the constructs the compiler's converter emits:
         # a heading, bold, a link, a colour span, strong/em and a list.
         start = script.index("const TEXT_SAMPLES = [")
@@ -128,8 +130,11 @@ class TestDiscoverScript:
             assert construct in samples, construct
         # Their control data goes through the same attribute escaper as a
         # web part's, and the blocks are written before the scratch save.
-        assert "esc(JSON.stringify(t.cd))" in script
+        assert "esc(JSON.stringify(cd))" in script
+        assert "textBlock(t.cd, t.html)" in script
         assert script.index("data-sp-rte") < script.index('failed("scratch save"')
+        # The measured result is stated where the shape is sent (784d52b).
+        assert "is rewritten as" in script and "'&#58;'" in script
 
     def test_script_reads_back_the_persisted_text_controls_verbatim(self):
         script = generate_discover_script()
@@ -148,6 +153,98 @@ class TestDiscoverScript:
         assert 'schema: "formwork.discovery/v1"' in script  # still v1: additive
         # The pending measurement is named where the shape is assumed.
         assert "TODO(measure, 2026-09-06)" in script
+        # The M1 persisted list is the M1 samples only: the M3 style samples
+        # are text controls too and must not leak into the compile gate.
+        assert "cd.controlType === 4 && textIds.has(cd.id)" in script
+
+    def test_script_places_styled_text_samples_under_an_additive_key(self):
+        """M3 (a): styled HTML, one text control per sample, requested and
+        persisted paired by control id under styling.styleSamples."""
+        script = generate_discover_script()
+        start = script.index("const STYLE_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        # The style attribute (colour, size, background, a styled link, a
+        # block alignment), a <mark>, and the editor's own class idiom.
+        for construct in (
+            'style="color:#a4262c;"',
+            'style="font-size:24px;"',
+            'style="background-color:#fff100;"',
+            '<a href="https://example.com/" style="color:#0078d4;text-decoration:underline;">',
+            "<mark>marked</mark>",
+            '<p style="text-align:center;">',
+            'class="fontColorRed"',
+            'class="fontSizeLarge"',
+            'class="highlightColorYellow"',
+        ):
+            assert construct in samples, construct
+        assert samples.count("label:") == 7
+        # Own id range, own section, the shared text-control builder, and
+        # the same requested/persisted pairing the M1 samples use.
+        assert '"00000000-0000-0000-0002-"' in script
+        assert "textBlock(s.cd, s.html)" in script
+        assert "const stylePersisted = persistedFor(storedBlocks, styleRequested);" in script
+        assert re.search(
+            r"styleSamples: \{\n\s*requested: styleRequested,\n\s*persisted: stylePersisted,",
+            script,
+        )
+        assert script.index("const stylePersisted") < script.index('/recycle"')
+        # The pending measurement is named where the samples are declared.
+        assert script.index("TODO(measure, 2026-09-06)") < start
+
+    def test_script_places_section_style_variants_one_per_section(self):
+        """M3 (b, c): section-level styling rides on each control in the
+        section; one web-part control per variant, each in its own section."""
+        script = generate_discover_script()
+        start = script.index("const SECTION_SAMPLES = [")
+        samples = script[start : script.index("];", start)]
+        for construct in (
+            "zoneEmphasis: 2",  # PnP's Soft emphasis, the known shape
+            'zoneEmphasis: 3, formworkProbe: "unknown key"',  # unknown-key survival
+            "zoneGroupMetadata: {",  # collapsible section
+            "sectionFactor: 0",  # full width
+            "layoutIndex: 2, isLayoutReflowOnTop: false",  # vertical section
+        ):
+            assert construct in samples, construct
+        assert samples.count("label:") == 5
+        # Web-part controls (the brief's (b)), on the first placeable part,
+        # each variant a section of its own, requested/persisted by id.
+        assert "webPartId: placeable[0].Id" in script
+        assert "emphasis: s.emphasis" in script
+        assert '"00000000-0000-0000-0003-"' in script
+        assert "const block = webPartBlock(s.cd);" in script
+        assert re.search(
+            r"sectionSamples: \{\n\s*requested: sectionRequested,\n\s*persisted: sectionPersisted,",
+            script,
+        )
+        # The refusal that guards placeable[0] names the call that came back empty.
+        assert "returned no placeable web part (ComponentType 1)" in script
+
+    def test_script_measures_the_page_model_save_path_without_failing_the_run(self):
+        """M3 second readback: the same canvas through SavePageAsDraft, with a
+        marker control so the readback shows whether the body was applied.
+        A refusal is recorded (status and server reason), never thrown."""
+        script = generate_discover_script()
+        assert 'API("sitepages/pages(" + scratchId + ")/SavePageAsDraft")' in script
+        # After the MERGE readback, before the recycle.
+        merge_readback = script.index('failed("scratch read back"')
+        assert merge_readback < script.index("SavePageAsDraft") < script.index('/recycle"')
+        # Non-fatal, with the server's reason surfaced through spError.
+        assert "pageModelSave.reason = spError(" in script
+        assert "} catch (err) {\n    pageModelSave.reason = bounded(err);" in script
+        # The marker and the two verdicts a reader needs before trusting it.
+        assert 'const MARKER_ID = "00000000-0000-0000-0004-000000000001";' in script
+        assert "pageModelSave.bodyApplied = after.some(b => b.id === MARKER_ID);" in script
+        assert "kept.canvas === before.get(id)" in script
+        assert "pageModelSave: pageModelSave," in script
+
+    def test_script_names_what_it_did_not_measure(self):
+        """The findings that are structural rather than behavioural ('cannot
+        be set via a page save') travel with the document, dated by the run."""
+        script = generate_discover_script()
+        start = script.index("unmeasured: [")
+        block = script[start : script.index("],", start)]
+        for topic in ("theme", "section-background", "section-spacing", "rendering"):
+            assert f'topic: "{topic}"' in block, topic
 
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")
