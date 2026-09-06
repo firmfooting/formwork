@@ -33,14 +33,15 @@ target site                     your laptop                          target site
    the measurements the compiler relies on. `formwork components
    formwork-discovery.json` lists what it found.
 
-   The paste-in also carries three measurement-only probes
-   (web-part properties, one-third layouts, list bindings) under additive
-   keys the compiler does not yet read. For the list bindings it creates two
-   containers of its own, the custom list "Formwork Probe Source" and the
-   document library "Formwork Probe Docs", and recycles both after the
-   scratch page; a refused create or recycle is recorded in the document
-   rather than failing the run, so check the console line if either name
-   already exists on the site.
+   The paste-in also carries the web-part property, one-third layout and
+   list-binding probes under additive keys; the compiler reads them through
+   the catalogue for a part's `properties`, a section's columns and a
+   part's `bind`. For the list bindings it creates two containers of its
+   own, the custom list "Formwork Probe Source" and the document library
+   "Formwork Probe Docs", and recycles both after the scratch page; a
+   refused create or recycle is recorded in the document rather than
+   failing the run, so check the console line if either name already exists
+   on the site.
 
 2. **Declare** the page in `page.yaml`. Sections, columns, parts, text, and
    the emphasis of a part; see [Writing the spec](#writing-the-spec).
@@ -51,7 +52,10 @@ target site                     your laptop                          target site
    one, 4/4/4 for three), applies property overrides, compiles text parts to
    text controls and writes `formwork-payload.json`. It prints one line per
    placed part. An unknown or hidden component refuses to compile: nothing is
-   placed that the site did not declare placeable.
+   placed that the site did not declare placeable. When `FINDINGS.md` is in
+   the working directory (or named with `--findings`), compile also checks
+   the age of every measurement the spec relies on; see
+   [The findings registry](#the-findings-registry).
 
 4. **Preview** it at any point, catalogue or not: `formwork preview page.yaml
    --out preview.html` renders the spec as a standalone HTML page, sections
@@ -345,6 +349,45 @@ error-body finding is a live finding of 2026-07-24)
   generating `zoneId` GUIDs, vertical and collapsible sections through the
   SavePage path, and section background images.
 
+## The findings registry
+
+[FINDINGS.md](FINDINGS.md) is the table of those claims, one row per
+measured claim: a check-id (`page.<scope>.<question>`), the claim, the
+measured date, the compact result, an evidence pointer into a fixture
+(`tests/fixtures/<file>#<dotted.key>`) and the re-probe command that
+re-derives it. It is data: `src/formwork/findings.py` parses it on load and
+refuses a malformed row, and `tests/test_findings.py` checks that every
+evidence pointer resolves, every date matches the run that produced the
+fixture, and the table is byte-identical to its own canonical rendering.
+The hand-measured section-emphasis mechanism is an ordinary row there; the
+pin survives because the re-probe re-derives it.
+
+Two commands read it.
+
+- `formwork compile` warns (never refuses) when the newest row a spec relies
+  on is older than `--findings-max-age` (default 90 days). A part relies on
+  the component-merge row, its own `page.properties.<alias>` row when it
+  sets `properties` (or the newest properties row when there is none for
+  that alias), the list-binding row when it has `bind`, and the
+  control-merge row when it has `emphasis`; a text part relies on the colon
+  rewrite and, when its HTML carries a `style`, a `class` or a `<mark>`, on
+  the styled-text row; a section relies on the row for its factors. Each
+  warning names the check-id, the parts or sections that rely on it, its age
+  and the re-probe command; a relied-on claim with no row at all is warned
+  about the same way. Evidence ages, it does not vanish. Without a
+  registry in the working directory compile is silent and unchanged; an
+  explicit `--findings` that does not exist is an error.
+- `formwork gen findprobe` prints the re-probe paste-in: the discover
+  probe's own measurement legs (shared as template partials, so the two
+  scripts carry the same bytes) plus a SavePage leg that establishes two
+  emphasised sections on a second scratch page and item-merges a third
+  control into one of them. It recycles everything it created, prints a
+  verdict per row ("same" or "DIFFERS" against the result column, the
+  discover-lane rows listed as not re-run here) and downloads
+  `formwork-findprobe.json` with the evidence under discover's keys. A
+  DIFFERS row is the cue to re-measure, fold the capture into the fixtures
+  and add a dated row; the old row stays.
+
 ## Development
 
 ```
@@ -356,13 +399,15 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 The paste-ins and the preview are Jinja templates under
 `src/formwork/templates/` (`jinja2` is the one runtime dependency besides
-PyYAML). The three scripts share one prelude partial, `_prelude.js.j2`, which
+PyYAML). The four scripts share one prelude partial, `_prelude.js.j2`, which
 carries the measured transport facts with their citations and is the only
-place the display layer names the Site Pages list; each script's template
-holds its own phase logic. Generated paste-ins are gated with `node --check`
-and compared byte for byte with the goldens under `tests/fixtures/expected/`
-(extract, discover, apply, and apply with an awkward payload); after a
-deliberate template change, regenerate them with
+place the display layer names the Site Pages list; discover and findprobe
+also share the probe setup and measurement legs (`_probe_setup.js.j2`,
+`_probe_legs.js.j2`); each script's template holds its own phase logic.
+Generated paste-ins are gated with `node --check` and compared byte for byte
+with the goldens under `tests/fixtures/expected/` (extract, discover, apply,
+apply with an awkward payload, and findprobe with the repository's
+`FINDINGS.md`); after a deliberate template change, regenerate them with
 `.venv/bin/python tests/test_generator.py` and review the diff like code.
 
 The fixtures under `tests/fixtures/` are live captures (data already

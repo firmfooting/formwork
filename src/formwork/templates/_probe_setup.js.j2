@@ -1,0 +1,71 @@
+{# src/formwork/templates/_probe_setup.js.j2 — shared by discover and findprobe: enumerates the site's components, names the scratch page, reads the web's root, creates the two M5 probe lists. Cut verbatim from discover.js.j2 (M6, 2026-09-07); discover's golden pins the bytes. #}
+  // 1. Enumerate every placeable component on this site.
+  const partsRes = await fetchWithRetry(API("web/GetClientSideWebParts"), {
+    headers: { Accept: "application/json;odata=nometadata" },
+  });
+  if (!partsRes.ok) throw await failed("GetClientSideWebParts", partsRes);
+  const components = (await partsRes.json()).value || [];
+
+  // 2. Create the scratch page, then write the discovery canvas onto it.
+  const SCRATCH = "formwork-discovery-" + Date.now();
+
+  // 2a. The web the probes run on. Its server-relative root is what a
+  //     list-bound part's webRelativeListUrl is relative to: measured on
+  //     the live CollabHome canvas (tests/fixtures/collabhome.bundle.json,
+  //     2026-09-05), selectedListUrl "/sites/TestSampleTeam/Shared
+  //     Documents" travels with webRelativeListUrl "Shared Documents".
+  const web = await getJson(API("web?$select=Id,Title,Url,ServerRelativeUrl"));
+  const webRoot = web.d.ServerRelativeUrl === "/" ? "" : web.d.ServerRelativeUrl;
+  const webRelative = (serverRelativeUrl) =>
+    serverRelativeUrl.startsWith(webRoot + "/")
+      ? serverRelativeUrl.slice(webRoot.length + 1) : serverRelativeUrl;
+
+  // 2b. M5 list-binding fixtures: a custom list and a document library of
+  //     this run's own, created BEFORE the scratch page so the binding
+  //     probe (3g) writes real ids and URLs, read back from _api/web/lists
+  //     rather than guessed. Both are recycled after the scratch page (5a).
+  //     Non-fatal: a refused create is recorded with the server's reason
+  //     and every binding that targets it is skipped, not invented. A list
+  //     created but not fully described (the detail read failed) is still
+  //     recycled; only a binding needs the detail.
+  const PROBE_LISTS = [
+    { key: "list", title: "Formwork Probe Source", baseTemplate: 100 },
+    { key: "library", title: "Formwork Probe Docs", baseTemplate: 101 },
+  ];
+  const probeLists = [];
+  for (const spec of PROBE_LISTS) {
+    const probe = {
+      key: spec.key, title: spec.title, baseTemplate: spec.baseTemplate,
+      created: false, status: 0, reason: "",
+      id: null, serverRelativeUrl: null, webRelativeUrl: null, defaultViewId: null, defaultViewUrl: null,
+      recycled: null, recycleStatus: 0, recycleReason: "",
+    };
+    probeLists.push(probe);
+    try {
+      const createRes = await fetchWithRetry(API("web/lists"), {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+        body: JSON.stringify({
+          __metadata: { type: "SP.List" },
+          Title: spec.title,
+          BaseTemplate: spec.baseTemplate,
+        }),
+      });
+      probe.status = createRes.status;
+      if (!createRes.ok) {
+        probe.reason = spError(await createRes.text().catch((e) => "body unreadable: " + bounded(e)));
+        continue;
+      }
+      probe.created = true;
+      probe.id = (await createRes.json()).d.Id;
+      const detail = (await getJson(API("web/lists(guid'" + probe.id + "')" +
+        "?$select=Id,Title,DefaultViewUrl,RootFolder/ServerRelativeUrl,DefaultView/Id" +
+        "&$expand=RootFolder,DefaultView"))).d;
+      probe.serverRelativeUrl = detail.RootFolder.ServerRelativeUrl;
+      probe.webRelativeUrl = webRelative(detail.RootFolder.ServerRelativeUrl);
+      probe.defaultViewId = detail.DefaultView.Id;
+      probe.defaultViewUrl = detail.DefaultViewUrl;
+    } catch (err) {
+      probe.reason = bounded(err);
+    }
+  }

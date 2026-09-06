@@ -2,9 +2,10 @@
 
 Golden files
 ------------
-``tests/fixtures/expected/{extract,discover,apply}.js`` hold the emitted
-scripts byte for byte (apply with its default arguments). Any generator change
-fails the golden tests until the fixtures are deliberately regenerated::
+``tests/fixtures/expected/{extract,discover,apply,findprobe}.js`` hold the
+emitted scripts byte for byte (apply with its default arguments, findprobe
+with the repository's FINDINGS.md). Any generator change fails the golden
+tests until the fixtures are deliberately regenerated::
 
     .venv/bin/python tests/test_generator.py
 
@@ -22,16 +23,21 @@ import subprocess
 
 import pytest
 
+from formwork.findings import load_findings
 from formwork.generator import (
     generate_apply_script,
     generate_discover_script,
     generate_extract_script,
+    generate_findprobe_script,
 )
 
 EXPECTED_SCHEMA = "formwork.bundle/v1"
 
 #: Committed golden files: the emitted scripts, byte for byte.
 EXPECTED = pathlib.Path(__file__).parent / "fixtures" / "expected"
+
+#: The registry the findprobe golden embeds: the repository's own.
+FINDINGS = pathlib.Path(__file__).parent.parent / "FINDINGS.md"
 
 #: A payload carrying every character the JSON embedding has to survive:
 #: braces, double quotes, a backslash, an apostrophe, angle brackets, a
@@ -49,6 +55,7 @@ GENERATORS = {
     "discover": generate_discover_script,
     "apply": generate_apply_script,
     "apply-payload": functools.partial(generate_apply_script, APPLY_PAYLOAD_NAME, APPLY_PAYLOAD, 1),
+    "findprobe": lambda: generate_findprobe_script(load_findings(FINDINGS)),
 }
 
 
@@ -163,8 +170,8 @@ class TestDiscoverScript:
             script,
         )
         assert 'schema: "formwork.discovery/v1"' in script  # still v1: additive
-        # The pending measurement is named where the shape is assumed.
-        assert "TODO(measure, 2026-09-06)" in script
+        # The measurement is cited where the shape is assumed, by its row.
+        assert "finding: page.text.styled-html (FINDINGS.md, 2026-09-06)" in script
         # The M1 persisted list is the M1 samples only: the M3 style samples
         # are text controls too and must not leak into the compile gate.
         assert "cd.controlType === 4 && textIds.has(cd.id)" in script
@@ -200,8 +207,8 @@ class TestDiscoverScript:
             script,
         )
         assert script.index("const stylePersisted") < script.index('/recycle"')
-        # The pending measurement is named where the samples are declared.
-        assert script.index("TODO(measure, 2026-09-06)") < start
+        # The measurement is cited where the samples are declared.
+        assert script.index("finding: page.text.styled-html") < start
 
     def test_script_places_section_style_variants_one_per_section(self):
         """M3 (b, c): section-level styling rides on each control in the

@@ -1,6 +1,9 @@
-// formwork discover v0.3.0 — run from any page of the site.
-// Creates two probe lists and a scratch page, places components, reads
-// back, recycles all three, and downloads formwork-discovery.json.
+// formwork findprobe v0.3.0 — run from any page of the site.
+// Re-runs every measurement FINDINGS.md records: creates two probe lists
+// and a scratch page, places the text, styling, property, layout and
+// list-binding probes, reads back, establishes section emphasis through
+// SavePage on a second scratch page, recycles all four, diffs each result
+// against the registry and downloads formwork-findprobe.json.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
   const VERBOSE = "application/json;odata=verbose";
@@ -179,6 +182,115 @@
     };
   }
 
+  // 0. The registry as generated: check-id, lane, measured date and the
+  //    recorded result. A findprobe-lane row is judged word for word against
+  //    the verdict computed in step 6; a discover-lane row is listed, not
+  //    re-run (formwork gen discover re-derives it).
+  const FINDINGS = [
+    {
+      "checkId": "page.components.merge-byte-exact",
+      "lane": "discover",
+      "measured": "2026-09-06",
+      "result": "stored count equals placed count"
+    },
+    {
+      "checkId": "page.layout.default-factors",
+      "lane": "discover",
+      "measured": "2026-09-06",
+      "result": "12, 6/6, 4/4/4 read back"
+    },
+    {
+      "checkId": "page.text.colon-rewrite",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact after the ':' fold"
+    },
+    {
+      "checkId": "page.text.styled-html",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "7/7 byte-exact after the ':' fold; byte-identical: mark, rte-classes"
+    },
+    {
+      "checkId": "page.emphasis.control-merge",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; zoneEmphasis 2, 3 read back"
+    },
+    {
+      "checkId": "page.section.variants-merge",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "3/3 byte-exact"
+    },
+    {
+      "checkId": "page.page-model.draft-refuses-html",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "refused 500: Unexpected character encountered while parsing value: <"
+    },
+    {
+      "checkId": "page.emphasis.section-savepage",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "SavePage 200; zoneEmphasis survived 2, 3; merged control 3"
+    },
+    {
+      "checkId": "page.properties.news-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; showChrome true to false round-tripped"
+    },
+    {
+      "checkId": "page.properties.quick-links-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; layoutId \"CompactCard\" to \"List\" round-tripped"
+    },
+    {
+      "checkId": "page.properties.image-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; captionText \"\" to \"Formwork caption probe: image\" round-tripped"
+    },
+    {
+      "checkId": "page.properties.events-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; layout \"Filmstrip\" to \"Compact\" round-tripped"
+    },
+    {
+      "checkId": "page.properties.hero-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; heroLayoutThreshold \"640\" to \"320\" round-tripped"
+    },
+    {
+      "checkId": "page.properties.list-web-part",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "2/2 byte-exact; isDocumentLibrary false to true round-tripped"
+    },
+    {
+      "checkId": "page.layout.factors-8-4",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "1/1 byte-exact"
+    },
+    {
+      "checkId": "page.layout.factors-4-8",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "3/3 byte-exact; written order kept"
+    },
+    {
+      "checkId": "page.bind.list-library-keys",
+      "lane": "findprobe",
+      "measured": "2026-09-06",
+      "result": "6/6 byte-exact"
+    }
+  ];
+
   // 1. Enumerate every placeable component on this site.
   const partsRes = await fetchWithRetry(API("web/GetClientSideWebParts"), {
     headers: { Accept: "application/json;odata=nometadata" },
@@ -250,46 +362,14 @@
     }
   }
 
-  // 3. Place one control per web part, spread across one/two/three-column
-  //    sections, then save and read back what SharePoint persisted.
+  // 3. The catalogue spread is discover's; the legs need the placeable
+  //    parts, the section list they extend and an empty control list.
   const placeable = components.filter(c => c.ComponentType === 1);
   if (!placeable.length) {
     throw new Error("GetClientSideWebParts returned no placeable web part (ComponentType 1)");
   }
   const sections = [];
-  const FACTORS = {
-    one: [12],
-    two: [6, 6],
-    three: [4, 4, 4],
-  };
-  let idx = 0;
-  for (const [name, factors] of Object.entries(FACTORS)) {
-    sections.push({ type: name, zoneIndex: (sections.length + 1) * 1000, factors });
-  }
   const controls = [];
-  const perColumn = {}; // "section:col" -> next controlIndex
-  for (let i = 0; i < placeable.length; i++) {
-    const s = i % sections.length;
-    const section = sections[s];
-    // Mostly column 1; every 4th part exercises column 2/3 when present.
-    const col = (i % 4 === 3 && section.factors.length > 1) ? 2 : 1;
-    const key = (s + 1) + ":" + col;
-    perColumn[key] = (perColumn[key] || 0) + 1;
-    controls.push({
-      controlType: 3,
-      id: "00000000-0000-0000-0000-" + String(i + 1).padStart(12, "0"),
-      position: {
-        zoneIndex: section.zoneIndex,
-        sectionIndex: s + 1,
-        controlIndex: perColumn[key],
-        zoneId: null,
-        sectionFactor: section.factors[col - 1],
-        layoutIndex: 1,
-      },
-      webPartId: placeable[i].Id,
-      emphasis: {},
-    });
-  }
 
   // 3a. Text controls are NOT web parts: controlType 4, no webPartId, no
   //     webpartdata; the HTML is the inner content of a data-sp-rte child.
@@ -889,117 +969,299 @@
     }
   }
 
-  // 6. Download the discovery document.
-  const discovery = {
-    schema: "formwork.discovery/v1",
-    discoveredAt: new Date().toISOString(),
+  // 5b. The section-emphasis mechanism (page.emphasis.section-savepage).
+  //     The item MERGE keeps zoneEmphasis on a control (3c), but a section
+  //     is only established by the page model: SavePage with a JSON-array
+  //     CanvasContent1 whose controls carry position.zoneId, and a control
+  //     item-merged into that zone afterwards reads back with the zone's
+  //     emphasis (tests/fixtures/savepage-section-emphasis.json and
+  //     discovery.styling.json styling.sectionEmphasisMechanism, 2026-09-06).
+  //     Re-derived on a second scratch page after the legs' own recycle, so
+  //     the readback above is exactly discover's. Non-fatal: a refusal is
+  //     the finding, recorded with the server's reason.
+  const SAVEPAGE_IDS = [
+    "00000000-0000-0000-0008-000000000001",
+    "00000000-0000-0000-0008-000000000002",
+    "00000000-0000-0000-0008-000000000003",
+  ];
+  const sectionEmphasis = {
+    attempted: true, ok: false, status: 0, reason: "", pageId: null, zoneIds: [], survived: [],
+    mergedOk: false, mergedStatus: 0, mergedEmphasis: null, survivedAfterMerge: [],
+    recycled: null, summary: "",
+  };
+  const savePageControl = (id, zoneIndex, zoneId, controlIndex, zoneEmphasis) => ({
+    controlType: 3,
+    id: id,
+    position: { zoneIndex: zoneIndex, sectionIndex: 1, controlIndex: controlIndex,
+      zoneId: zoneId, sectionFactor: 12, layoutIndex: 1 },
+    webPartId: placeable[0].Id,
+    emphasis: { zoneEmphasis: zoneEmphasis },
+  });
+  // The zoneEmphasis a stored control carries, or "none" when the control
+  // or its emphasis is missing: the readback the recorded result quotes.
+  const emphasisOf = (blocks, id) => {
+    const kept = blocks.find(b => b.id === id);
+    const emphasis = kept && kept.controlData && kept.controlData.emphasis;
+    return emphasis && emphasis.zoneEmphasis !== undefined ? emphasis.zoneEmphasis : "none";
+  };
+  const readCanvas = async (pageId, what) => {
+    const res = await fetchWithRetry(
+      PAGES + "/items(" + pageId + ")?$select=CanvasContent1",
+      { headers: { Accept: VERBOSE } }
+    );
+    if (!res.ok) throw await failed(what, res);
+    return (await res.json()).d.CanvasContent1 || "";
+  };
+  const mergeCanvas = async (pageId, canvasHtml) => {
+    const itemRes = await fetchWithRetry(
+      PAGES + "/items(" + pageId + ")",
+      { headers: { Accept: VERBOSE } }
+    );
+    if (!itemRes.ok) throw await failed("SavePage page read", itemRes);
+    const etag = (await itemRes.json()).d.__metadata.etag;
+    return fetchWithRetry(
+      PAGES + "/items(" + pageId + ")",
+      {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest(),
+          "X-HTTP-Method": "MERGE", "If-Match": etag },
+        body: JSON.stringify({
+          __metadata: { type: "SP.Data.SitePagesItem" },
+          CanvasContent1: canvasHtml,
+        }),
+      }
+    );
+  };
+  try {
+    const zoneIds = [crypto.randomUUID(), crypto.randomUUID()];
+    sectionEmphasis.zoneIds = zoneIds;
+    // Two one-column sections, soft (2) and strong (3), in the body shape the
+    // fixture recorded: the control data plus the embedded webPartData.
+    const established = [
+      savePageControl(SAVEPAGE_IDS[0], 1, zoneIds[0], 1, 2),
+      savePageControl(SAVEPAGE_IDS[1], 2, zoneIds[1], 1, 3),
+    ].map(cd => ({
+      position: cd.position, emphasis: cd.emphasis, id: cd.id, controlType: 3,
+      isFromSectionTemplate: false, addedFromPersistedData: false,
+      webPartData: webPartData(cd), webPartId: cd.webPartId,
+    }));
+    const savePage = await createSitePage(SCRATCH + "-savepage");
+    sectionEmphasis.pageId = savePage.id;
+    await savePage.setFields({ Title: SCRATCH + "-savepage" });
+    const savePageRes = await fetchWithRetry(
+      API("sitepages/pages(" + savePage.id + ")/SavePage"),
+      {
+        method: "POST",
+        headers: { Accept: VERBOSE, "Content-Type": VERBOSE, "X-RequestDigest": await getDigest() },
+        body: JSON.stringify({
+          __metadata: { type: "SP.Publishing.SitePage" },
+          CanvasContent1: JSON.stringify(established),
+          LayoutWebpartsContent: "[]",
+          BannerImageUrl: "/_layouts/15/images/sitepagethumbnail.png",
+        }),
+      }
+    );
+    sectionEmphasis.status = savePageRes.status;
+    if (!savePageRes.ok) {
+      sectionEmphasis.reason =
+        spError(await savePageRes.text().catch((e) => "body unreadable: " + bounded(e)));
+    } else {
+      sectionEmphasis.ok = true;
+      const storedSave = await readCanvas(savePage.id, "read back after SavePage");
+      const afterSave = persistedControls(storedSave);
+      sectionEmphasis.survived = SAVEPAGE_IDS.slice(0, 2).map(id => emphasisOf(afterSave, id));
+      // A third control, item-merged into the second zone with its emphasis:
+      // the apply path, once SavePage has established the zone.
+      const merged = savePageControl(SAVEPAGE_IDS[2], 2, zoneIds[1], 2, 3);
+      const mergedCanvas = storedSave.endsWith(wrapperClose)
+        ? storedSave.slice(0, -wrapperClose.length) + webPartBlock(merged) + wrapperClose
+        : storedSave + webPartBlock(merged);
+      const mergeRes = await mergeCanvas(savePage.id, mergedCanvas);
+      sectionEmphasis.mergedStatus = mergeRes.status;
+      if (!mergeRes.ok) {
+        sectionEmphasis.reason =
+          spError(await mergeRes.text().catch((e) => "body unreadable: " + bounded(e)));
+      } else {
+        sectionEmphasis.mergedOk = true;
+        const afterMerge = persistedControls(await readCanvas(savePage.id, "read back after the merge"));
+        sectionEmphasis.mergedEmphasis = emphasisOf(afterMerge, SAVEPAGE_IDS[2]);
+        sectionEmphasis.survivedAfterMerge = SAVEPAGE_IDS.slice(0, 2).map(id => emphasisOf(afterMerge, id));
+      }
+    }
+  } catch (err) {
+    sectionEmphasis.reason = bounded(err);
+  }
+  // The summary is the row's result grammar: what FINDINGS.md quotes.
+  const survivedText = "zoneEmphasis survived " + sectionEmphasis.survived.join(", ");
+  if (!sectionEmphasis.ok) {
+    sectionEmphasis.summary = sectionEmphasis.status
+      ? "SavePage refused " + sectionEmphasis.status + ": " +
+        (sectionEmphasis.reason || spError(sectionEmphasis.reason || ""))
+      : "failed: " + (sectionEmphasis.reason || "(no reason captured)");
+  } else if (!sectionEmphasis.mergedOk) {
+    sectionEmphasis.summary = "SavePage " + sectionEmphasis.status + "; " + survivedText + "; merge " +
+      (sectionEmphasis.mergedStatus ? "refused " + sectionEmphasis.mergedStatus + ": " : "failed: ") +
+      sectionEmphasis.reason;
+  } else {
+    const afterMerge = sectionEmphasis.survivedAfterMerge.join(", ");
+    sectionEmphasis.summary = "SavePage " + sectionEmphasis.status + "; " + survivedText +
+      "; merged control " + sectionEmphasis.mergedEmphasis +
+      (afterMerge === sectionEmphasis.survived.join(", ") ? "" : "; after the merge " + afterMerge);
+  }
+
+  // 5c. Recycle the SavePage scratch page. Non-fatal, recorded on the row.
+  if (sectionEmphasis.pageId !== null) {
+    try {
+      const res = await fetchWithRetry(
+        PAGES + "/items(" + sectionEmphasis.pageId + ")/recycle",
+        { method: "POST", headers: { Accept: VERBOSE, "X-RequestDigest": await getDigest() } }
+      );
+      sectionEmphasis.recycled = res.ok;
+      if (!res.ok) {
+        sectionEmphasis.reason += " | recycle " + res.status + " " +
+          spError(await res.text().catch((e) => "body unreadable: " + bounded(e)));
+      }
+    } catch (err) {
+      sectionEmphasis.recycled = false;
+      sectionEmphasis.reason += " | recycle failed: " + bounded(err);
+    }
+  }
+
+  // 6. Verdicts: one string per findprobe-lane check-id, in the words the
+  //    registry's result column uses, so a re-run's judgement is a string
+  //    comparison. "byte-exact" is the stored block equal to the requested
+  //    one; the text rows fold ':' to '&#58;' on both sides first, the one
+  //    rewrite measured on text (page.text.colon-rewrite).
+  const fold = canvas => canvas.replace(/:/g, "&#58;");
+  const byId = new Map(storedBlocks.map(b => [b.id, b.canvas]));
+  const byteExact = requested => requested.filter(r => byId.get(r.id) === r.canvas).length;
+  const foldExact = requested =>
+    requested.filter(r => byId.has(r.id) && fold(byId.get(r.id)) === fold(r.canvas)).length;
+  const ratio = (n, of) => n + "/" + of;
+  const labels = rows => rows.map(r => r.label).join(", ");
+  const verdicts = {};
+  verdicts["page.text.colon-rewrite"] =
+    ratio(foldExact(textRequested), textRequested.length) + " byte-exact after the ':' fold";
+  const identical = styleRequested.filter(r => byId.get(r.id) === r.canvas);
+  verdicts["page.text.styled-html"] =
+    ratio(foldExact(styleRequested), styleRequested.length) + " byte-exact after the ':' fold" +
+    "; byte-identical: " + (identical.length ? labels(identical) : "none");
+  const emphasisRows = sectionRequested.filter(r => r.label.startsWith("emphasis-"));
+  const variantRows = sectionRequested.filter(r => !r.label.startsWith("emphasis-"));
+  verdicts["page.emphasis.control-merge"] =
+    ratio(byteExact(emphasisRows), emphasisRows.length) + " byte-exact; zoneEmphasis " +
+    emphasisRows.map(r => emphasisOf(storedBlocks, r.id)).join(", ") + " read back";
+  verdicts["page.section.variants-merge"] =
+    ratio(byteExact(variantRows), variantRows.length) + " byte-exact";
+  verdicts["page.page-model.draft-refuses-html"] = pageModelSave.ok
+    ? "accepted " + pageModelSave.status +
+      (pageModelSave.bodyApplied ? ", body applied" : ", body NOT applied")
+    : "refused " + pageModelSave.status + ": " + pageModelSave.reason.split(". ")[0];
+  // The property verdicts are keyed by alias slug, the same slug the Python
+  // side computes (findings.alias_slug): NewsWebPart is news-web-part.
+  const slug = alias => alias.replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1-$2").toLowerCase();
+  for (const sample of PROPERTY_SAMPLES) {
+    const skipped = propertySkipped.find(s => s.component === sample.component);
+    const rows = propertyRequested.filter(r => r.component === sample.component);
+    const modified = rows.find(r => r.variant === "modified");
+    const kept = modified ? propertyPersisted.find(p => p.id === modified.id) : null;
+    const roundTripped = Boolean(kept) && kept.present &&
+      JSON.stringify(kept.storedValue) === JSON.stringify(modified.newValue);
+    verdicts["page.properties." + slug(sample.component)] = skipped
+      ? "not placed: " + skipped.why
+      : ratio(byteExact(rows), rows.length) + " byte-exact; " + sample.path + " " +
+        JSON.stringify(modified.oldValue) + " to " + JSON.stringify(modified.newValue) +
+        (roundTripped ? " round-tripped" : " NOT round-tripped");
+  }
+  const layoutRows = prefix => layoutRequested.filter(r => r.label.startsWith(prefix));
+  verdicts["page.layout.factors-8-4"] =
+    ratio(byteExact(layoutRows("split-8-4")), layoutRows("split-8-4").length) + " byte-exact";
+  const writtenOrder = layoutRows("split-4-8-two").map(r => r.id);
+  const storedOrder = storedBlocks.map(b => b.id).filter(id => writtenOrder.includes(id));
+  verdicts["page.layout.factors-4-8"] =
+    ratio(byteExact(layoutRows("split-4-8")), layoutRows("split-4-8").length) +
+    " byte-exact; written order " + (storedOrder.join() === writtenOrder.join() ? "kept" : "CHANGED");
+  verdicts["page.bind.list-library-keys"] =
+    ratio(byteExact(bindingRequested), bindingRequested.length) + " byte-exact" +
+    (bindingSkipped.length ? "; skipped " + labels(bindingSkipped) : "");
+  verdicts["page.emphasis.section-savepage"] = sectionEmphasis.summary;
+
+  // 7. Diff against the registry and download. "same" means the row still
+  //    holds; "DIFFERS" is the operator's cue to re-measure, fold the new
+  //    capture into the fixtures and add a dated row. A verdict no row
+  //    records is listed under `unregistered`.
+  const report = FINDINGS.map(row => {
+    if (row.lane !== "findprobe") {
+      return { checkId: row.checkId, measured: row.measured, recorded: row.result,
+        reprobed: "not re-run here: formwork gen discover", verdict: "discover lane" };
+    }
+    const reprobed = hasOwn(verdicts, row.checkId)
+      ? verdicts[row.checkId] : "no leg computes this check-id";
+    return { checkId: row.checkId, measured: row.measured, recorded: row.result,
+      reprobed: reprobed, verdict: reprobed === row.result ? "same" : "DIFFERS" };
+  });
+  const registered = new Set(FINDINGS.map(row => row.checkId));
+  const unregistered = Object.keys(verdicts).filter(id => !registered.has(id))
+    .map(id => ({ checkId: id, reprobed: verdicts[id] }));
+  const counts = {
+    same: report.filter(r => r.verdict === "same").length,
+    differs: report.filter(r => r.verdict === "DIFFERS").length,
+    discoverLane: report.filter(r => r.verdict === "discover lane").length,
+  };
+  const findprobe = {
+    schema: "formwork.findprobe/v1",
+    probedAt: new Date().toISOString(),
     web: {
       url: location.origin + webRoot,
       id: web.d.Id,
       title: web.d.Title,
     },
-    components: components,
+    registry: FINDINGS,
+    verdicts: report,
+    unregistered: unregistered,
+    counts: counts,
+    // The evidence under discover's own keys, so a DIFFERS row can be read
+    // the way its fixture was, plus the SavePage leg's record.
+    evidence: {
+      textControls: { requested: textRequested, persisted: textPersisted },
+      styling: {
+        styleSamples: { requested: styleRequested, persisted: stylePersisted },
+        sectionSamples: { requested: sectionRequested, persisted: sectionPersisted },
+        pageModelSave: pageModelSave,
+        sectionEmphasisMechanism: sectionEmphasis,
+      },
+      webpartProperties: { requested: propertyRequested, persisted: propertyPersisted,
+        skipped: propertySkipped },
+      layoutVariants: { requested: layoutRequested, persisted: layoutPersisted },
+      listBindings: { fixtures: probeLists, requested: bindingRequested,
+        persisted: bindingPersisted, skipped: bindingSkipped },
+      storedCanvas: stored,
+    },
     placements: {
-      placedCount: controls.length + textControls.length + styleControls.length + sectionControls.length
-        + propertyControls.length + layoutControls.length + bindingControls.length,
-      textPlacedCount: textControls.length,
-      styleSampleCount: styleControls.length,
-      sectionSampleCount: sectionControls.length,
-      propertySampleCount: propertyControls.length,
-      layoutVariantCount: layoutControls.length,
-      listBindingCount: bindingControls.length,
-      requestedCanvasChars: canvas.length,
-      storedCanvasChars: stored.length,
-      storedControlCount: (stored.match(/data-sp-canvascontrol/g) || []).length,
       scratchPageId: scratchId,
       recycled: recycleRes.ok,
+      requestedCanvasChars: canvas.length,
+      storedCanvasChars: stored.length,
+      storedControlCount: storedBlocks.length,
+      savePageScratchId: sectionEmphasis.pageId,
+      savePageRecycled: sectionEmphasis.recycled,
     },
-    // Additive (schema stays v1): the two text controls as sent and as
-    // SharePoint persisted them, matched by control id on the Python side.
-    textControls: {
-      requested: textRequested,
-      persisted: textPersisted,
-    },
-    // Additive (schema stays v1): the M3 styling probe. Each sample list
-    // pairs requested with persisted by control id, labelled; pageModelSave
-    // is the second readback (step 4b); unmeasured names what this run
-    // deliberately did not claim, and why.
-    styling: {
-      styleSamples: {
-        requested: styleRequested,
-        persisted: stylePersisted,
-      },
-      sectionSamples: {
-        requested: sectionRequested,
-        persisted: sectionPersisted,
-      },
-      pageModelSave: pageModelSave,
-      unmeasured: [
-        { topic: "theme",
-          why: "Theme and accent colour are web-level settings (web/ApplyTheme, thememanager); " +
-            "CanvasContent1 carries no theme field, so no page save can set them." },
-        { topic: "section-background",
-          why: "The control-data shape for section backgrounds (image, gradient) is not known " +
-            "to formwork; a guessed shape would only re-measure unknown-key survival. To learn " +
-            "it, set one in the editor on a sandbox page and run the extract paste-in." },
-        { topic: "section-spacing",
-          why: "formwork knows no per-section spacing key in the canvas model; if this tenant's " +
-            "editor exposes one, extract a page that uses it to learn the shape." },
-        { topic: "rendering",
-          why: "This probe reads persisted bytes only. Whether the text web part renders an " +
-            "inline style, and whether the editor honours the section variants, is a browser " +
-            "question outside this readback." },
-      ],
-    },
-    // Additive (schema stays v1): the M5 probes, each requested/persisted
-    // pair matched by control id on the Python side (catalogue.py), with
-    // what this run could not place under `skipped` and the fixture lists'
-    // fate under `fixtures`. finding: page.properties.<alias>,
-    // page.layout.factors-8-4/4-8, page.bind.list-library-keys
-    // (FINDINGS.md, 2026-09-06); the DSL's properties, columns and bind
-    // keys read them through the catalogue.
-    webpartProperties: {
-      requested: propertyRequested,
-      persisted: propertyPersisted,
-      skipped: propertySkipped,
-    },
-    layoutVariants: {
-      requested: layoutRequested,
-      persisted: layoutPersisted,
-    },
-    listBindings: {
-      fixtures: probeLists,
-      requested: bindingRequested,
-      persisted: bindingPersisted,
-      skipped: bindingSkipped,
-    },
-    storedCanvas: stored,
   };
-  const blob = new Blob([JSON.stringify(discovery, null, 2)],
+  const blob = new Blob([JSON.stringify(findprobe, null, 2)],
                         { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "formwork-discovery.json";
+  a.download = "formwork-findprobe.json";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  console.log("[formwork] discovery complete:",
-    components.length, "components |",
-    controls.length, "placed |",
-    "stored", (stored.match(/data-sp-canvascontrol/g) || []).length, "controls |",
-    "text controls persisted", textPersisted.length, "of", textRequested.length, "|",
-    "style samples persisted", stylePersisted.length, "of", styleRequested.length, "|",
-    "section samples persisted", sectionPersisted.length, "of", sectionRequested.length, "|",
-    "property samples persisted", propertyPersisted.length, "of", propertyRequested.length,
-    "(" + propertyPersisted.filter(p => p.present).length + " with the key present) |",
-    "layout variants persisted", layoutPersisted.length, "of", layoutRequested.length, "|",
-    "list bindings persisted", bindingPersisted.length, "of", bindingRequested.length,
-    "(skipped " + bindingSkipped.length + ") |",
-    "page-model save:", pageModelSave.ok ? "HTTP " + pageModelSave.status +
-      (pageModelSave.bodyApplied ? ", body applied" : ", body NOT applied") +
-      (pageModelSave.probeControlsUnchanged ? ", probe controls unchanged" : ", probe controls CHANGED")
-      : "refused (" + pageModelSave.status + " " + pageModelSave.reason + ")", "|",
+  console.table(report);
+  console.log("[formwork] findprobe complete:",
+    counts.same, "same |", counts.differs, "DIFFERS |", counts.discoverLane, "discover lane |",
+    unregistered.length, "unregistered |",
     "scratch recycled:", recycleRes.ok, "|",
+    "SavePage scratch recycled:", sectionEmphasis.recycled, "|",
     "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
       ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
-})().catch(err => { console.error("[formwork] discover failed:", err); });
+})().catch(err => { console.error("[formwork] findprobe failed:", err); });
