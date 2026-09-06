@@ -264,13 +264,24 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
     controls: list[Control] = []
     parts_out: list[dict[str, Any]] = []
     wants_text = any(p.kind == "text" for p in placements(spec))
-    if wants_text and not any(s.persisted is not None for s in cat.text_controls):
-        raise DslError(
-            "the spec has text parts, but this discovery document carries no persisted"
-            " text-control measurement. Run 'formwork gen discover' against the target"
-            " site first, then re-run 'formwork compile': applying an unmeasured text"
-            " shape can abort after page creation on the byte-exact check."
-        )
+    if wants_text:
+        matched = [s for s in cat.text_controls if s.persisted_matches() is True]
+        mismatched = [s for s in cat.text_controls if s.persisted_matches() is False]
+        if mismatched:
+            raise DslError(
+                "the discovery document's text-control measurement does not match what"
+                " was sent (after normalising SharePoint's ':' -> '&#58;' rewrite):"
+                " the text-control shape has changed since the probe ran. Re-run"
+                " 'formwork gen discover' and review the new samples before compiling"
+                " text parts."
+            )
+        if not matched:
+            raise DslError(
+                "the spec has text parts, but this discovery document carries no persisted"
+                " text-control measurement. Run 'formwork gen discover' against the target"
+                " site first, then re-run 'formwork compile': applying an unmeasured text"
+                " shape can abort after page creation on the byte-exact check."
+            )
     for placement in placements(spec):
         where = {
             "section": placement.section,

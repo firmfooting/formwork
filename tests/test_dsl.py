@@ -368,3 +368,37 @@ def test_malformed_text_controls_scalar_values_are_tolerated():
     doc = dict(DISCOVERY, textControls={"requested": 1, "persisted": True})
     cat = parse_discovery(doc)
     assert cat.text_controls == ()
+
+
+def test_persisted_matches_survives_the_colon_normalisation():
+    """Measured 2026-09-06: SharePoint rewrites ':' to '&#58;' in text-control HTML."""
+    doc = copy.deepcopy(DISCOVERY_WITH_TEXT)
+    samples = doc["textControls"]["persisted"]
+    samples[0]["canvas"] = samples[0]["canvas"].replace(":", "&#58;")
+    cat = parse_discovery(doc)
+    assert [s.persisted_matches() for s in cat.text_controls] == [True, None]
+
+
+def test_compile_accepts_colon_normalised_measurement():
+    cat = parse_discovery(DISCOVERY_WITH_TEXT)
+    # Force the persisted sample through the same normalisation: compile must
+    # still accept it.
+    doc_raw = json.loads(json.dumps(DISCOVERY_WITH_TEXT))
+    doc_raw["textControls"]["persisted"][0]["canvas"] = (
+        doc_raw["textControls"]["persisted"][0]["canvas"].replace(":", "&#58;")
+    )
+    cat = parse_discovery(doc_raw)
+    spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>x</p>"}]}]}
+    result = compile_page(spec, cat)
+    assert "data-sp-rte" in result.canvas
+
+
+def test_compile_refuses_a_real_shape_change():
+    doc = copy.deepcopy(DISCOVERY_WITH_TEXT)
+    doc["textControls"]["persisted"][0]["canvas"] = (
+        doc["textControls"]["persisted"][0]["canvas"].replace("data-sp-rte", "data-sp-other")
+    )
+    cat = parse_discovery(doc)
+    spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>x</p>"}]}]}
+    with pytest.raises(DslError, match="shape has changed"):
+        compile_page(spec, cat)

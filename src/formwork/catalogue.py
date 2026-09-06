@@ -46,6 +46,25 @@ class TextControlSample:
     requested: str
     persisted: str | None
 
+    def persisted_matches(self) -> bool | None:
+        """Whether SharePoint kept this sample byte-for-byte after normalising.
+
+        Measured live (shauntestazure, 2026-09-06): SharePoint rewrites ``:``
+        as ``&#58;`` inside a text control's inner HTML — the same entity
+        style the canvas attributes use — and leaves everything else
+        byte-identical. So equality is judged after folding that one
+        normalisation back, and only that one: any other difference is a
+        real shape change and returns False.
+
+        None when the sample was never persisted (or the stored bytes could
+        not be read), in which case no claim is made.
+        """
+        if self.persisted is None:
+            return None
+        if self.persisted == self.requested:
+            return True
+        return self.persisted.replace("&#58;", ":") == self.requested
+
 
 @dataclass(frozen=True)
 class Catalogue:
