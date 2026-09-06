@@ -33,6 +33,15 @@ target site                     your laptop                          target site
    the measurements the compiler relies on. `formwork components
    formwork-discovery.json` lists what it found.
 
+   The paste-in also carries three measurement-only probes
+   (web-part properties, one-third layouts, list bindings) under additive
+   keys the compiler does not yet read. For the list bindings it creates two
+   containers of its own, the custom list "Formwork Probe Source" and the
+   document library "Formwork Probe Docs", and recycles both after the
+   scratch page; a refused create or recycle is recorded in the document
+   rather than failing the run, so check the console line if either name
+   already exists on the site.
+
 2. **Declare** the page in `page.yaml`. Sections, columns, parts, text, and
    the emphasis of a part; see [Writing the spec](#writing-the-spec).
 
