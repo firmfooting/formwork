@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e '.[dev]'
+      - name: Pytest
+        run: pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e '.[dev]'
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy src
+
+  node-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e .
+      - name: Generated scripts are valid JS
+        run: |
+          python -c "
+          from formwork.generator import generate_extract_script, generate_apply_script
+          from pathlib import Path
+          import subprocess, sys, json
+          scripts = [generate_extract_script(), generate_apply_script()]
+          scripts.append(generate_apply_script(page_name='X', canvas_payload=json.dumps({'canvas': '<div></div>', 'title': 'X'})))
+          for i, s in enumerate(scripts):
+              p = Path(f'/tmp/fw-generated-{i}.js'); p.write_text(s, encoding='utf-8')
+              subprocess.run(['node', '--check', str(p)], check=True)
+          print('node --check passed for', len(scripts), 'generated scripts')
+          "

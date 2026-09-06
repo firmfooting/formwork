@@ -1,0 +1,125 @@
+# formwork
+
+SharePoint page copier: extract a modern page with a console paste-in, process
+the bundle, and pour it into another site.
+
+The name is the trade: formwork is the mould you build once and reuse for many
+identical pours. Build a page once — news, quick links, document library,
+whatever your layout is — then reuse the mould across teams, sites, or tenants.
+
+## How it works
+
+Three steps, two paste-ins, one small CLI.
+
+```
+source page                your laptop                 target site
+┌─────────────┐   1. gen extract   ┌──────────┐   3. gen apply   ┌─────────────┐
+│ DevTools    │ ─────────────────> │ formwork │ ───────────────> │ DevTools    │
+│ console     │   paste-in saves   │ process  │   paste-in saves │ console     │
+│             │   formwork-        │          │   the new page   │             │
+│             │   bundle.json      │          │                  │             │
+└─────────────┘                    └──────────┘                  └─────────────┘
+```
+
+1. **Extract** — `formwork gen extract` prints a self-contained JavaScript
+   paste-in. Run it from the browser console on the source page. It fetches
+   the page item and web/site identity over same-origin REST and downloads
+   `formwork-bundle.json`: page fields, the raw canvas markup
+   (`CanvasContent1`), and source identity. No admin consent, no app
+   registration — your existing session is the credential, and it can only
+   read what you can already see.
+
+2. **Process** — the CLI inventories every site-bound value in the bundle
+   (`baseUrl` links, `siteId`/`webId` properties, list ids and urls,
+   searchable plain texts), rewrites what your target mapping resolves, and
+   flags what it could not:
+
+   ```
+   formwork inspect formwork-bundle.json
+   formwork process formwork-bundle.json \
+     --mapping mapping.json --page-name "Team home" --out payload.json
+   ```
+
+   Unresolved values are never guessed. They are left exactly as extracted and
+   reported, so a partial mapping degrades to "as extracted", not to a broken
+   page.
+
+3. **Apply** — `formwork gen apply payload.json --name "Team home"` prints the
+   second paste-in with the processed payload embedded. Run it from the
+   console on any page of the target site: it creates the page item, writes
+   the canvas with MERGE + etag concurrency control, then verifies by reading
+   back what SharePoint actually stored and comparing byte-for-byte.
+
+## The canvas contract
+
+A modern page's layout lives in `CanvasContent1` as HTML-encoded canvas
+markup. Each control is a `div` whose `data-sp-controldata` /
+`data-sp-webpartdata` attributes carry entity-escaped JSON. Formwork parses
+this markup, keeps untouched controls byte-exact, and re-escapes only the
+controls it changed — matching SharePoint's own escaping style (`&#123;`,
+`&quot;`, `&#58;`), which is not what generic HTML escapers produce. The
+round-trip is tested against a live-captured page.
+
+## What copies, what does not
+
+Copied: page title, description, layout type, promoted state, section
+structure, column widths, web part choices and properties — everything in the
+canvas.
+
+Not copied (by design in v0.1):
+
+- Site pages behind the page: news posts, list items, documents the web parts
+  display. A News web part copied to another site shows the target site's
+  news; a Document library web part needs its `lists` mapping to point at a
+  library that exists on the target.
+- Page permissions, page-level analytics, comments, version history.
+- Images stored as `imageSources` are left as extracted when unresolved —
+  they will keep pointing at the source site until you map them.
+
+Mapping file shape:
+
+```json
+{
+  "baseUrl": "https://tenant.sharepoint.com/sites/target",
+  "siteId": "00000000-0000-0000-0000-000000000000",
+  "webId": "00000000-0000-0000-0000-000000000000",
+  "lists": {
+    "Document library": {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "url": "/sites/target/Shared Documents",
+      "webRelativeUrl": "Shared Documents",
+      "viewId": "00000000-0000-0000-0000-000000000000"
+    }
+  },
+  "textOverrides": {"Documents": "Team documents"}
+}
+```
+
+`lists` is keyed by source web part title. `textOverrides` is keyed by the
+exact source text. Everything you omit stays as extracted and is reported as
+unresolved.
+
+## Getting the ids for the mapping
+
+Run `formwork gen extract`-style discovery on the TARGET site — any console
+session there can read `/_api/web?$select=Id,Title,Url` and
+`/_api/site?$select=Id,Url`. `formwork inspect` on the bundle tells you which
+list titles you need ids for.
+
+## Development
+
+```
+python -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/mypy src
+```
+
+Generated paste-ins are additionally gated with `node --check`. The fixtures
+under `tests/fixtures/` were captured from a live modern page (with its data
+already anonymous and sandbox-bound) and are the ground truth for the canvas
+parser.
+
+## Licence
+
+MIT.

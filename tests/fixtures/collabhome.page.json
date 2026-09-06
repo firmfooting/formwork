@@ -1,0 +1,20 @@
+{
+  "Id": 2,
+  "Title": "Home",
+  "PageLayoutType": "Home",
+  "BannerImageUrl": {
+    "__metadata": {
+      "type": "SP.FieldUrlValue"
+    },
+    "Description": "/_layouts/15/images/sitepagethumbnail.png",
+    "Url": "https://shauntestazure.sharepoint.com/_layouts/15/images/sitepagethumbnail.png"
+  },
+  "Description": null,
+  "PromotedState": 0,
+  "LayoutWebpartsContent": null,
+  "ID": 2,
+  "Created": "2026-08-24T09:55:41Z",
+  "AuthorId": 10,
+  "Modified": "2026-08-24T09:55:45Z",
+  "EditorId": 10
+}

@@ -1,0 +1,163 @@
+"""Formwork command-line interface."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any
+
+from . import __version__
+from .bundle import parse_bundle
+from .generator import generate_apply_script, generate_extract_script
+from .refs import apply_plan, build_plan, scan
+
+
+def _cmd_gen_extract(_args: argparse.Namespace) -> int:
+    print(generate_extract_script())
+    return 0
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    bundle = parse_bundle(_read_json(args.bundle))
+    refs = scan(bundle)
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "kind": r.kind,
+                        "location": r.location,
+                        "value": r.value,
+                        "webPartTitle": r.web_part_title,
+                    }
+                    for r in refs
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    print(f"page: {bundle.source.page_path}  ({len(bundle.web_parts)} web parts)")
+    print(f"{'kind':<8} {'web part':<20} location")
+    for r in refs:
+        print(f"{r.kind:<8} {r.web_part_title:<20} {r.location} = {str(r.value)[:60]}")
+    print(f"\n{len(refs)} site-bound refs found.")
+    return 0
+
+
+def _cmd_process(args: argparse.Namespace) -> int:
+    bundle = parse_bundle(_read_json(args.bundle))
+    refs = scan(bundle)
+    mapping = _read_json(args.mapping) if args.mapping else {}
+    plan = build_plan(refs, mapping)
+    result = apply_plan(bundle, plan)
+
+    payload = {
+        "schema": "formwork.payload/v1",
+        "sourcePage": bundle.source.page_path,
+        "title": args.page_name or bundle.page.get("Title", "Formwork copy"),
+        "canvas": result.canvas_html,
+        "unresolved": [
+            {"kind": r.kind, "location": r.location, "value": r.value}
+            for r in plan.unresolved
+        ],
+    }
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+    print(
+        f"payload written: {args.out} "
+        f"({len(result.canvas_html)} chars of canvas, "
+        f"{len(plan.applied)} refs rewritten, {len(plan.unresolved)} unresolved)"
+    )
+    if plan.unresolved:
+        print("unresolved site-bound values (left as extracted):", file=sys.stderr)
+        for r in plan.unresolved:
+            print(f"  - [{r.kind}] {r.location} = {str(r.value)[:60]}", file=sys.stderr)
+        print(
+            "resolve them by adding 'lists' / 'textOverrides' entries to the "
+            "mapping file, or accept them and copy the apply script.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _cmd_gen_apply(args: argparse.Namespace) -> int:
+    payload = _read_json(args.payload)
+    print(
+        generate_apply_script(
+            page_name=args.name,
+            canvas_payload=json.dumps(payload),
+            promoted_state=args.promoted_state,
+        )
+    )
+    return 0
+
+
+def _read_json(path: str) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="formwork",
+        description="SharePoint page copier: extract, process, apply.",
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    gen = sub.add_parser("gen", help="generate console paste-in scripts")
+    gen_sub = gen.add_subparsers(dest="gen_command", required=True)
+    gen_extract = gen_sub.add_parser(
+        "extract", help="script that downloads the source page bundle"
+    )
+    gen_extract.set_defaults(func=_cmd_gen_extract)
+    gen_apply = gen_sub.add_parser(
+        "apply", help="script that creates the page on the target site"
+    )
+    gen_apply.add_argument("payload", help="payload.json produced by 'process'")
+    gen_apply.add_argument("--name", required=True, help="title for the new page")
+    gen_apply.add_argument(
+        "--promoted-state",
+        type=int,
+        default=0,
+        choices=(0, 1),
+        help="0 = site page, 1 = news post",
+    )
+    gen_apply.set_defaults(func=_cmd_gen_apply)
+
+    inspect_p = sub.add_parser(
+        "inspect", help="list the site-bound references in a bundle"
+    )
+    inspect_p.add_argument("bundle", help="formwork-bundle.json from 'gen extract'")
+    inspect_p.add_argument("--json", action="store_true", help="emit JSON")
+    inspect_p.set_defaults(func=_cmd_inspect)
+
+    process_p = sub.add_parser(
+        "process",
+        help="rewrite a bundle for the target site and emit an apply payload",
+    )
+    process_p.add_argument("bundle", help="formwork-bundle.json from 'gen extract'")
+    process_p.add_argument(
+        "--mapping",
+        help="target mapping JSON: baseUrl, siteId, webId, lists, textOverrides",
+    )
+    process_p.add_argument("--page-name", help="title for the new page")
+    process_p.add_argument(
+        "--out", default="formwork-payload.json", help="where to write the payload"
+    )
+    process_p.set_defaults(func=_cmd_process)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    result: int = args.func(args)
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())
