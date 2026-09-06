@@ -10,7 +10,7 @@ is the plan below. Standing constraints from the prior plan carry forward
 (measured-not-guessed, byte-exact goldens, cited refusals, gates per commit,
 adversarial review per slice, PR only with stacks ≤ 5 deep, merge as needed).
 
-## M5 — properties, nesting/alignment, list bindings (IN FLIGHT)
+## M5 — properties, nesting/alignment, list bindings (DONE — PR #4 merged 2026-09-07)
 
 Dispatched 2026-09-06 (`proc_4f3c02949ade`). Discover gains three additive
 measurement blocks:
@@ -28,7 +28,7 @@ Then: operator gates, live run through the sandbox tab, measurements folded
 into typed catalogue accessors, DSL consumption (list binding mapping,
 factor variants) as the next code slice.
 
-## M6 — measurement infrastructure: FINDINGS registry, re-probe lane
+## M6 — measurement infrastructure (DONE — PR #5 merged 2026-09-07; 17-row registry, staleness warnings, findprobe lane)
 
 The architecture review's P2-3, promoted because "keep strong records" is
 the point of the tool:
@@ -44,7 +44,7 @@ the point of the tool:
 - Hand-authored fixture rows (section-emphasis) get promoted to
   re-runnable rows so the pin survives a re-run of discover.
 
-## M7 — page state and identity (P2-2)
+## M7 — page state and identity (IN FLIGHT — dispatched 2026-09-07, proc_cd85503ba6ad, branch feat/page-state)
 
 Create is only birth. Measure and add to the DSL/apply: file name (slug vs
 editor-assigned), Description, BannerImageUrl, layout type beyond Home,
