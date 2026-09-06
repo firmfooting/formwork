@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "formwork"
-version = "0.2.0"
-description = "SharePoint page copier: extract, process, apply."
+version = "0.3.0"
+description = "Declarative SharePoint modern pages: declare, compile, preview, apply; and copy."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -178,9 +178,9 @@
     };
   }
 
-  const PAGE_NAME = "Formwork copy";
-  const PAYLOAD = JSON.parse("{}");
-  const PROMOTED_STATE = 0;
+  const PAGE_NAME = "Bob's <page>";
+  const PAYLOAD = JSON.parse("{\"title\": \"Bob's <page>\", \"canvas\": \"<div>{\\\"k\\\": 1} \\\\ </script> \\u00fc</div>\"}");
+  const PROMOTED_STATE = 1;
 
   // 1. Create the page through the sitepages API, then set item fields.
   const created = await createSitePage(PAGE_NAME);

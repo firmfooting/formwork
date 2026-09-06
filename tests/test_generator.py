@@ -14,6 +14,7 @@ will run. Regeneration is deliberately a separate, explicit act rather than a
 flag on the test run; the friction is the point.
 """
 
+import functools
 import json
 import pathlib
 import re
@@ -32,11 +33,22 @@ EXPECTED_SCHEMA = "formwork.bundle/v1"
 #: Committed golden files: the emitted scripts, byte for byte.
 EXPECTED = pathlib.Path(__file__).parent / "fixtures" / "expected"
 
+#: A payload carrying every character the JSON embedding has to survive:
+#: braces, double quotes, a backslash, an apostrophe, angle brackets, a
+#: closing script tag and a non-ASCII letter. The default apply golden
+#: embeds only "{}", so this second golden is the one that pins the
+#: embedding (review P3-2 / P3-4, 2026-09-06).
+APPLY_PAYLOAD_NAME = "Bob's <page>"
+APPLY_PAYLOAD = json.dumps(
+    {"title": APPLY_PAYLOAD_NAME, "canvas": '<div>{"k": 1} \\ </script> ü</div>'}
+)
+
 #: Every generated script, by the name of its golden file.
 GENERATORS = {
     "extract": generate_extract_script,
     "discover": generate_discover_script,
     "apply": generate_apply_script,
+    "apply-payload": functools.partial(generate_apply_script, APPLY_PAYLOAD_NAME, APPLY_PAYLOAD, 1),
 }
 
 
@@ -283,6 +295,16 @@ class TestApplyScript:
         assert '"X"' in script
         assert json.dumps('{"k":1}') in script  # JSON-embedded, quotes escaped
 
+    def test_awkward_payload_decodes_back_to_itself(self):
+        # The golden pins the bytes; this pins the meaning: the literal the
+        # script parses at runtime is the payload, character for character.
+        script = GENERATORS["apply-payload"]()
+        literal = re.search(r'JSON\.parse\("(.+)"\);', script)
+        assert literal, "no embedded payload literal found"
+        assert json.loads(f'"{literal.group(1)}"') == APPLY_PAYLOAD
+        assert f"const PAGE_NAME = {json.dumps(APPLY_PAYLOAD_NAME)};" in script
+        assert "const PROMOTED_STATE = 1;" in script
+
 
 @pytest.mark.parametrize("name", sorted(GENERATORS))
 class TestTransportFacts:
@@ -290,7 +312,8 @@ class TestTransportFacts:
 
     One pin per fact, on every generated script, so the prelude cannot lose a
     fact without a test going red. Each names the partial the fact came from;
-    the prelude comment in generator.py carries the same citation.
+    the Jinja comments at the top of _prelude.js.j2 carry the same citations
+    (pinned by test_prelude_cites_the_four_transport_facts_with_dates).
     """
 
     def test_throttle_is_detected_on_the_final_url_not_the_status(self, name):
@@ -394,6 +417,34 @@ def test_site_pages_title_is_named_only_by_the_display_layer():
         if 'listByTitle("Site Pages")' in path.read_text(encoding="utf-8")
     )
     assert emitters == ["_prelude.js.j2"]
+
+
+def test_prelude_cites_the_four_transport_facts_with_dates():
+    """The citations are Jinja comments, stripped from every emitted script,
+    so no golden or script pin can hold them (review P3-8, 2026-09-06). Read
+    the template: each fact names its dbml-sharepoint partial and a date."""
+    prelude = (PACKAGE / "templates" / "_prelude.js.j2").read_text(encoding="utf-8")
+    facts = re.findall(
+        r"Transport fact (\d) \(dbml-sharepoint (_\w+\.js\.j2):[^,]+,\s+"
+        r"(?:read|live finding)\s+(20\d\d-\d\d-\d\d)\)",
+        prelude,
+    )
+    assert facts == [
+        ("1", "_http.js.j2", "2026-09-06"),
+        ("2", "_http.js.j2", "2026-07-24"),
+        ("3", "_digest_cached.js.j2", "2026-09-06"),
+        ("4", "_site_guard.js.j2", "2026-09-06"),
+    ]
+    # And none of it reaches the operator's paste-in.
+    for name, generate in GENERATORS.items():
+        assert "Transport fact" not in generate(), name
+
+
+def test_prelude_carries_no_post_json_helper():
+    """postJson had no caller in any script once getDigest grew its own
+    guarded fetch; it is gone from the prelude (review P3-1, 2026-09-06)."""
+    for name, generate in GENERATORS.items():
+        assert "postJson" not in generate(), name
 
 
 def test_extract_filter_literal_doubles_apostrophes():

@@ -1,4 +1,4 @@
-// formwork discover v0.2.0 — run from any page of the site.
+// formwork discover v0.3.0 — run from any page of the site.
 // Creates a scratch page, places components, reads back, recycles,
 // and downloads formwork-discovery.json.
 (async () => {
@@ -90,15 +90,6 @@
   async function getJson(url) {
     const res = await fetchWithRetry(url, { headers: { Accept: VERBOSE } });
     if (!res.ok) throw await failed("GET " + url, res);
-    return res.json();
-  }
-  async function postJson(url, body) {
-    const res = await fetchWithRetry(url, {
-      method: "POST",
-      headers: { Accept: VERBOSE, "Content-Type": VERBOSE },
-      body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) throw await failed("POST " + url, res);
     return res.json();
   }
   // The context digest must be POSTed — GET is refused with 405. This is the

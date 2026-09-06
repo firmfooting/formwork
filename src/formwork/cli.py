@@ -146,9 +146,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         f"{len(result.parts)} parts)"
     )
     for part in result.parts:
+        emphasis = part.get("emphasis") or {}
+        styled = f", zoneEmphasis {emphasis['zoneEmphasis']}" if emphasis else ""
         print(
             f"  section {part['section']}, column {part['column']}: "
-            f"{part['component']} ({part['title']})"
+            f"{part['component']} ({part['title']}{styled})"
         )
     return 0
 

@@ -7,7 +7,12 @@ import pytest
 
 from formwork.canvas import Canvas, escape_attribute
 from formwork.catalogue import Catalogue, parse_discovery
-from formwork.dsl import DslError, compile_page
+from formwork.dsl import (
+    EMPHASIS_KEYS,
+    ZONE_EMPHASIS_VALUES,
+    DslError,
+    compile_page,
+)
 
 
 # A synthetic discovery document in the wire shape the discover script emits.
@@ -271,6 +276,149 @@ class TestTextParts:
         cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<div><p>x</p></div>"), cat)
         assert result.canvas.count("<div") == result.canvas.count("</div>")
+
+
+class TestEmphasis:
+    """The ``emphasis:`` key on a component part (M3-DSL).
+
+    Measured 2026-09-06 (tests/fixtures/discovery.styling.json,
+    styling.sectionSamples): a web-part control sent with
+    ``emphasis: {zoneEmphasis: 2}`` and one with ``{zoneEmphasis: 3, ...}``
+    persisted byte-for-byte through the apply path's item MERGE, and every
+    text control the probe read back carried ``emphasis: {}``.
+    test_styling_evidence.py pins those bytes; these tests pin what the
+    compiler makes of them, read back through Canvas.parse.
+    """
+
+    def spec(self, part, **section):
+        return {"page": "T", "sections": [{"type": "one", "parts": [part], **section}]}
+
+    def control(self, part):
+        result = compile_page(self.spec(part), parse_discovery(DISCOVERY))
+        return Canvas.parse(result.canvas).controls[0]
+
+    def test_emphasis_block_reaches_the_control_data(self):
+        control = self.control({"component": "NewsWebPart", "emphasis": {"zoneEmphasis": 2}})
+        assert control.control_data["emphasis"] == {"zoneEmphasis": 2}
+        # Same keys, same order, as the measured web-part controls.
+        assert list(control.control_data) == [
+            "controlType",
+            "id",
+            "position",
+            "webPartId",
+            "emphasis",
+        ]
+
+    def test_shorthand_integer_means_zone_emphasis(self):
+        control = self.control({"component": "NewsWebPart", "emphasis": 3})
+        assert control.control_data["emphasis"] == {"zoneEmphasis": 3}
+
+    def test_without_emphasis_the_block_is_empty(self):
+        # {} is what every probe control was sent with, and what SharePoint
+        # kept on all of them.
+        assert self.control({"component": "NewsWebPart"}).control_data["emphasis"] == {}
+        explicit = self.control({"component": "NewsWebPart", "emphasis": {}})
+        assert explicit.control_data["emphasis"] == {}
+
+    def test_emphasis_is_escaped_in_the_measured_style_and_round_trips(self):
+        result = compile_page(
+            self.spec({"component": "NewsWebPart", "emphasis": 2}), parse_discovery(DISCOVERY)
+        )
+        escaped = "&quot;emphasis&quot;&#58;&#123;&quot;zoneEmphasis&quot;&#58;2&#125;"
+        assert escaped in result.canvas
+        parsed = Canvas.parse(result.canvas)
+        assert parsed.render() == result.canvas
+        for control in parsed.controls:
+            control.mark_dirty()
+        assert parsed.render() == result.canvas
+
+    @pytest.mark.parametrize("value", ZONE_EMPHASIS_VALUES)
+    def test_every_accepted_value_is_encoded_as_given(self, value):
+        control = self.control({"component": "NewsWebPart", "emphasis": value})
+        assert control.control_data["emphasis"] == {"zoneEmphasis": value}
+
+    def test_the_accepted_set_is_the_editor_swatch_set(self):
+        # 2 and 3 are measured; 1 and 4 are the editor's other two swatches
+        # (see the ZONE_EMPHASIS_VALUES comment in dsl.py).
+        assert ZONE_EMPHASIS_VALUES == (1, 2, 3, 4)
+        assert {"zoneEmphasis"} == EMPHASIS_KEYS
+
+    @pytest.mark.parametrize("value", [0, 5, -1, "2", 2.0, True, None, [2]])
+    def test_values_outside_the_set_refuse_with_the_citation(self, value):
+        with pytest.raises(
+            DslError,
+            match=r"part 1: emphasis\.zoneEmphasis must be an integer in \{1, 2, 3, 4\}"
+            r".*sectionSamples.*2026-09-06",
+        ):
+            compile_page(
+                self.spec({"component": "NewsWebPart", "emphasis": value}),
+                parse_discovery(DISCOVERY),
+            )
+
+    def test_unknown_emphasis_keys_refuse(self):
+        # The probe's unknown key echoed back from SharePoint; that is
+        # survival, not rendering, so the DSL does not pass it through.
+        part = {
+            "component": "NewsWebPart",
+            "emphasis": {"zoneEmphasis": 3, "formworkProbe": "x", "alpha": 1},
+        }
+        with pytest.raises(
+            DslError, match=r"part 1: unknown emphasis key\(s\) alpha, formworkProbe"
+        ):
+            compile_page(self.spec(part), parse_discovery(DISCOVERY))
+
+    def test_emphasis_on_a_text_part_refuses(self):
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
+        with pytest.raises(
+            DslError, match=r"part 1: emphasis on text parts is not measured.*\{\}"
+        ):
+            compile_page(self.spec({"text": "<p>x</p>", "emphasis": 2}), cat)
+
+    def test_section_level_emphasis_refuses_naming_the_measured_limitation(self):
+        spec = self.spec({"component": "NewsWebPart"}, emphasis=2)
+        with pytest.raises(
+            DslError, match=r"section 1: section-level emphasis is not encodable.*SavePage"
+        ):
+            compile_page(spec, parse_discovery(DISCOVERY))
+
+    @pytest.mark.parametrize("key", ["background", "spacing"])
+    def test_unmeasured_section_styling_keys_refuse(self, key):
+        spec = self.spec({"component": "NewsWebPart"}, **{key: "x"})
+        with pytest.raises(DslError, match=rf"section 1: .*section-{key}"):
+            compile_page(spec, parse_discovery(DISCOVERY))
+
+    def test_theme_on_the_page_refuses(self):
+        spec = {"page": "T", "theme": "x", "sections": [{"parts": []}]}
+        with pytest.raises(DslError, match=r"spec: theme is not a page setting"):
+            compile_page(spec, parse_discovery(DISCOVERY))
+
+    def test_compiled_parts_report_the_emphasis(self):
+        result = compile_page(
+            self.spec({"component": "NewsWebPart", "emphasis": 2}), parse_discovery(DISCOVERY)
+        )
+        assert result.parts[0]["emphasis"] == {"zoneEmphasis": 2}
+        plain = compile_page(self.spec({"component": "NewsWebPart"}), parse_discovery(DISCOVERY))
+        assert plain.parts[0]["emphasis"] == {}
+
+    def test_emphasis_is_carried_per_control(self):
+        # The key lives on the part, so two parts in one section can differ.
+        # SharePoint's own editor writes the same block on every control of a
+        # section (tests/fixtures/savepage-section-emphasis.json); the DSL
+        # does not enforce that, it encodes what the spec says.
+        spec = {
+            "page": "T",
+            "sections": [
+                {
+                    "type": "two",
+                    "parts": [
+                        {"component": "NewsWebPart", "emphasis": 2},
+                        {"component": "NewsWebPart", "column": 2},
+                    ],
+                }
+            ],
+        }
+        canvas = Canvas.parse(compile_page(spec, parse_discovery(DISCOVERY)).canvas)
+        assert [c.control_data["emphasis"] for c in canvas.controls] == [{"zoneEmphasis": 2}, {}]
 
 
 class TestCompilePage:

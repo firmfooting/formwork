@@ -1,4 +1,4 @@
-// formwork extract v0.2.0 — run from the source page itself.
+// formwork extract v0.3.0 — run from the source page itself.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
   const VERBOSE = "application/json;odata=verbose";
@@ -88,15 +88,6 @@
   async function getJson(url) {
     const res = await fetchWithRetry(url, { headers: { Accept: VERBOSE } });
     if (!res.ok) throw await failed("GET " + url, res);
-    return res.json();
-  }
-  async function postJson(url, body) {
-    const res = await fetchWithRetry(url, {
-      method: "POST",
-      headers: { Accept: VERBOSE, "Content-Type": VERBOSE },
-      body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) throw await failed("POST " + url, res);
     return res.json();
   }
   // The context digest must be POSTed — GET is refused with 405. This is the
@@ -224,7 +215,7 @@
       webId: web.d.Id,
       siteId: site.d.Id,
     },
-    meta: { webTitle: web.d.Title, formworkVersion: "0.2.0" },
+    meta: { webTitle: web.d.Title, formworkVersion: "0.3.0" },
     page: page,
     sections: [],
     webParts: [],

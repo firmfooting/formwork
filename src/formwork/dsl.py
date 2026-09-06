@@ -13,7 +13,7 @@ by the compiler and the preview, so both validate the same way.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .canvas import Canvas, Control, escape_attribute
@@ -34,6 +34,58 @@ SECTION_FACTORS: dict[str, list[int]] = {
 
 #: The two kinds of part a spec may place.
 PART_KINDS = ("component", "text")
+
+#: ``zoneEmphasis`` values the ``emphasis:`` key accepts on a component part.
+#: Measured (tests/fixtures/discovery.styling.json, shauntestazure sandbox,
+#: 2026-09-06): 2 and 3 were sent on web-part controls and persisted
+#: byte-for-byte through the item MERGE the apply script uses
+#: (``styling.sectionSamples``, labels ``emphasis-soft`` and
+#: ``emphasis-unknown-key``), and 3 was live-verified surviving on a newly
+#: merged control in a SavePage-established section
+#: (``styling.sectionEmphasisMechanism.evidence.savePageJsonArray``). 1 is
+#: the editor pane's "neutral" and 4 has not been read back: both are
+#: accepted as the key set the editor offers, not as measured values.
+ZONE_EMPHASIS_VALUES = (1, 2, 3, 4)
+
+#: The one emphasis key the DSL encodes. The probe showed an unknown key
+#: (``formworkProbe``) echoing back unchanged (``emphasis-unknown-key``,
+#: 2026-09-06); that proves survival, not rendering, so nothing else is
+#: accepted.
+EMPHASIS_KEYS = frozenset({"zoneEmphasis"})
+
+#: Styling keys a spec may be tempted to write on a section (or ``theme`` on
+#: the page) that compile cannot encode, each with the measured reason. All
+#: are named in the discovery document's ``styling.unmeasured`` list or its
+#: ``sectionEmphasisMechanism`` block (2026-09-06); refusing them keeps
+#: "nothing is silently dropped" true for styling as well as text.
+UNENCODABLE_SECTION_KEYS: dict[str, str] = {
+    "emphasis": (
+        "section-level emphasis is not encodable by compile alone: measured 2026-09-06"
+        " (discovery.styling.json, styling.sectionEmphasisMechanism), section emphasis"
+        " takes effect only once the section is established through the page model's"
+        " SavePage with a zoneId, which the apply path does not do. Put 'emphasis' on"
+        " the section's component parts to carry the measured per-control block."
+    ),
+    "background": (
+        "section backgrounds are unmeasured: the control-data shape is not known"
+        " (discovery.styling.json, styling.unmeasured 'section-background', 2026-09-06)"
+    ),
+    "spacing": (
+        "section spacing is unmeasured: no per-section spacing key is known in the"
+        " canvas model (discovery.styling.json, styling.unmeasured 'section-spacing',"
+        " 2026-09-06)"
+    ),
+}
+
+#: Same rule for the page: theme and accent are web-level settings that no
+#: page save can set (``styling.unmeasured`` 'theme', 2026-09-06).
+UNENCODABLE_PAGE_KEYS: dict[str, str] = {
+    "theme": (
+        "theme is not a page setting: theme and accent colour are web-level"
+        " (web/ApplyTheme), and CanvasContent1 carries no theme field"
+        " (discovery.styling.json, styling.unmeasured 'theme', 2026-09-06)"
+    ),
+}
 
 
 class DslError(ValueError):
@@ -59,6 +111,7 @@ class Placement:
     control_index: int  # 1-based within the section
     kind: str  # one of PART_KINDS
     part: dict[str, Any]
+    emphasis: dict[str, Any] = field(default_factory=dict)  # validated control-data block
 
     @property
     def section_factor(self) -> int:
@@ -77,12 +130,18 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
     sections = spec.get("sections")
     if not isinstance(sections, list) or not sections:
         raise DslError("spec must declare at least one section")
+    for key, reason in UNENCODABLE_PAGE_KEYS.items():
+        if key in spec:
+            raise DslError(f"spec: {reason}")
 
     placed: list[Placement] = []
     ordinal = 0
     for s_index, section in enumerate(sections, start=1):
         if not isinstance(section, dict):
             raise DslError(f"section {s_index}: expected a mapping with 'type' and 'parts'")
+        for key, reason in UNENCODABLE_SECTION_KEYS.items():
+            if key in section:
+                raise DslError(f"section {s_index}: {reason}")
         type_name = section.get("type", "one")
         if type_name not in SECTION_FACTORS:
             known = ", ".join(sorted(SECTION_FACTORS))
@@ -98,6 +157,7 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
                     f"part {ordinal} names column {column} but section "
                     f"{s_index} has {len(factors)} column(s)"
                 )
+            kind = _part_kind(part, ordinal)
             placed.append(
                 Placement(
                     ordinal=ordinal,
@@ -106,11 +166,55 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
                     factors=factors,
                     column=column,
                     control_index=p_index,
-                    kind=_part_kind(part, ordinal),
+                    kind=kind,
                     part=part,
+                    emphasis=part_emphasis(part, ordinal, kind),
                 )
             )
     return placed
+
+
+def part_emphasis(part: dict[str, Any], ordinal: int, kind: str) -> dict[str, Any]:
+    """The control-data ``emphasis`` block a part declares, validated.
+
+    ``emphasis: {zoneEmphasis: N}`` or the shorthand ``emphasis: N``; absent
+    (or an empty mapping) is ``{}``, which is what every control the probe
+    sent carried. Component parts only: every text control the probe read
+    back (``textControls`` and the seven ``styling.styleSamples``,
+    2026-09-06) carried ``emphasis: {}``, so emphasis on a text part is
+    unmeasured and refused rather than guessed. Values and keys are checked
+    against :data:`ZONE_EMPHASIS_VALUES` and :data:`EMPHASIS_KEYS`, whose
+    comments carry the measurement.
+    """
+    if "emphasis" not in part:
+        return {}
+    if kind == "text":
+        raise DslError(
+            f"part {ordinal}: emphasis on text parts is not measured; the discover"
+            " samples always carry {} (discovery.styling.json textControls and"
+            " styleSamples, 2026-09-06). Put it on a component part."
+        )
+    raw = part["emphasis"]
+    block = dict(raw) if isinstance(raw, dict) else {"zoneEmphasis": raw}
+    if not block:
+        return {}
+    unknown = sorted(str(key) for key in block if key not in EMPHASIS_KEYS)
+    if unknown:
+        raise DslError(
+            f"part {ordinal}: unknown emphasis key(s) {', '.join(unknown)}: only"
+            " zoneEmphasis is encoded. The probe measured that an unknown key echoes"
+            " back (discovery.styling.json, emphasis-unknown-key, 2026-09-06), not"
+            " that it renders."
+        )
+    value = block["zoneEmphasis"]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in ZONE_EMPHASIS_VALUES:
+        accepted = ", ".join(str(v) for v in ZONE_EMPHASIS_VALUES)
+        raise DslError(
+            f"part {ordinal}: emphasis.zoneEmphasis must be an integer in {{{accepted}}}"
+            " (2 and 3 measured persisting, discovery.styling.json sectionSamples,"
+            f" 2026-09-06; 1 and 4 are the editor's other swatches), got {value!r}"
+        )
+    return {"zoneEmphasis": value}
 
 
 def _part_kind(part: dict[str, Any], ordinal: int) -> str:
@@ -173,7 +277,17 @@ def _control_id(placement: Placement) -> str:
 
 
 def _control_for(component: Component, placement: Placement) -> Control:
-    """Build one web-part canvas control for a spec part."""
+    """Build one web-part canvas control for a spec part.
+
+    The control data is the shape the discover probe sends for a web-part
+    control (discover.js.j2 step 3, same keys in the same order), with the
+    part's validated ``emphasis`` block in place of the probe's ``{}``.
+    Measured (discovery.styling.json sectionSamples, 2026-09-06): a web-part
+    control sent with ``emphasis: {zoneEmphasis: 2}`` (and one with 3)
+    through the item MERGE persisted byte-for-byte. Whether the section then
+    RENDERS with that emphasis is the SavePage-establishment question the
+    ``sectionEmphasisMechanism`` block records; see UNENCODABLE_SECTION_KEYS.
+    """
     control_id = _control_id(placement)
     web_part_id = component.component_id
     part = placement.part
@@ -182,7 +296,7 @@ def _control_for(component: Component, placement: Placement) -> Control:
         "id": control_id,
         "position": _position(placement),
         "webPartId": web_part_id,
-        "emphasis": {},
+        "emphasis": dict(placement.emphasis),
     }
     web_part_data = {
         "id": web_part_id,
@@ -304,6 +418,7 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
                 "kind": "component",
                 "component": component.alias,
                 "title": placement.part.get("displayTitle") or component.title,
+                "emphasis": dict(placement.emphasis),
             }
             | where
         )
