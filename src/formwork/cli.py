@@ -14,10 +14,19 @@ from .bundle import parse_bundle
 from .canvas import Canvas
 from .catalogue import parse_discovery
 from .dsl import DslError, compile_page
+from .findings import (
+    DEFAULT_MAX_AGE_DAYS,
+    DEFAULT_PATH,
+    Registry,
+    load_findings,
+    load_findings_if_present,
+    stale_findings,
+)
 from .generator import (
     generate_apply_script,
     generate_discover_script,
     generate_extract_script,
+    generate_findprobe_script,
 )
 from .preview import build_preview, render_preview
 from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
@@ -107,6 +116,36 @@ def _cmd_gen_discover(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _registry_for(args: argparse.Namespace) -> Registry | None:
+    """The findings registry a command consults.
+
+    ``--findings`` names it explicitly and must exist. Without the flag the
+    lookup is FINDINGS.md in the working directory, and its absence is
+    silence, not an error: a spec compiles the same with or without a
+    registry; the registry only adds warnings.
+    """
+    if args.findings is None:
+        return load_findings_if_present(DEFAULT_PATH)
+    try:
+        return load_findings(args.findings)
+    except FileNotFoundError:
+        raise ValueError(
+            f"no findings registry at {args.findings}: run from the repository root"
+            " or pass --findings"
+        ) from None
+
+
+def _cmd_gen_findprobe(args: argparse.Namespace) -> int:
+    registry = _registry_for(args)
+    if registry is None:
+        raise ValueError(
+            f"no findings registry at {DEFAULT_PATH}: run from the repository root"
+            " or pass --findings"
+        )
+    print(generate_findprobe_script(registry))
+    return 0
+
+
 def _cmd_components(args: argparse.Namespace) -> int:
     cat = parse_discovery(_read_json(args.discovery))
     placeable = [c for c in cat.components if c.component_type == 1 and not c.hidden]
@@ -140,6 +179,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
+    registry = _registry_for(args)
     cat = parse_discovery(_read_json(args.discovery))
     spec = _read_yaml(args.spec)
     result = compile_page(spec, cat)
@@ -163,6 +203,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             f"  section {part['section']}, column {part['column']}: "
             f"{part['component']} ({part['title']}{styled})"
         )
+    # Staleness is a warning, never a refusal: evidence ages, it does not
+    # vanish. Each line names the check-id and the command that re-derives it.
+    if registry is not None:
+        for entry in stale_findings(spec, cat, registry, max_age_days=args.findings_max_age):
+            print(f"warning: {entry.message(args.findings_max_age)}", file=sys.stderr)
     return 0
 
 
@@ -207,6 +252,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="script that discovers placeable components via a scratch page",
     )
     gen_discover.set_defaults(func=_cmd_gen_discover)
+    gen_findprobe = gen_sub.add_parser(
+        "findprobe",
+        help="script that re-runs every measurement FINDINGS.md records and diffs the results",
+    )
+    gen_findprobe.add_argument(
+        "--findings",
+        help="the findings registry to re-probe "
+        f"(default: {DEFAULT_PATH} in the working directory)",
+    )
+    gen_findprobe.set_defaults(func=_cmd_gen_findprobe)
     gen_apply = gen_sub.add_parser(
         "apply", help="script that creates the page on the target site"
     )
@@ -247,6 +302,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compile_p.add_argument(
         "--out", default="formwork-payload.json", help="where to write the payload"
+    )
+    compile_p.add_argument(
+        "--findings",
+        help="the findings registry to judge the spec's evidence by (default:"
+        f" {DEFAULT_PATH} in the working directory; silent when absent)",
+    )
+    compile_p.add_argument(
+        "--findings-max-age",
+        type=int,
+        default=DEFAULT_MAX_AGE_DAYS,
+        metavar="DAYS",
+        help="warn when a relied-on measurement is older than this many days"
+        f" (default {DEFAULT_MAX_AGE_DAYS})",
     )
     compile_p.set_defaults(func=_cmd_compile)
 

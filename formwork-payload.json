@@ -1,0 +1,7 @@
+{
+  "schema": "formwork.payload/v1",
+  "sourcePage": "(compiled from spec)",
+  "title": "CLI staleness demo",
+  "canvas": "<div><div data-sp-canvascontrol=\"\" data-sp-canvasdataversion=\"1.0\" data-sp-controldata=\"&#123;&quot;controlType&quot;&#58;4,&quot;id&quot;&#58;&quot;00000000-0000-0000-0000-000000000001&quot;,&quot;position&quot;&#58;&#123;&quot;zoneIndex&quot;&#58;1000.0,&quot;sectionIndex&quot;&#58;1.0,&quot;controlIndex&quot;&#58;1.0,&quot;zoneId&quot;&#58;null,&quot;sectionFactor&quot;&#58;12,&quot;layoutIndex&quot;&#58;1&#125;,&quot;emphasis&quot;&#58;&#123;&#125;,&quot;editorType&quot;&#58;&quot;CKEditor&quot;&#125;\"><div data-sp-rte=\"\"><p>Hello <b>world</b></p></div></div></div>",
+  "unresolved": []
+}

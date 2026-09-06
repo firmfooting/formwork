@@ -12,18 +12,25 @@ Jinja templates under ``formwork/templates``:
   formwork-discovery.json;
 * the apply script runs on any page of the TARGET site, reads the processed
   payload embedded in it, creates the new page, writes the canvas, and
-  verifies by reading back what SharePoint actually stored.
+  verifies by reading back what SharePoint actually stored;
+* the findprobe script runs on any page of a site, re-runs every measurement
+  FINDINGS.md records (the discover probe's own measurement legs, shared as
+  partials, plus the SavePage section-emphasis leg), diffs each result
+  against the registry's recorded value, and downloads formwork-findprobe.json.
 
 All fetches use relative URLs so the same script body works on any tenant and
 site; only the embedded payload differs per apply run. The shared prelude
-(``_prelude.js.j2``) carries the measured transport facts; each script's own
-template carries its phase logic. The emitted bytes are pinned by the goldens
-under ``tests/fixtures/expected``.
+(``_prelude.js.j2``) carries the measured transport facts; the probe setup
+and measurement legs (``_probe_setup.js.j2``, ``_probe_legs.js.j2``) are
+shared by discover and findprobe; each script's own template carries its
+phase logic. The emitted bytes are pinned by the goldens under
+``tests/fixtures/expected``.
 """
 
 import json
 
 from . import __version__
+from .findings import Registry
 from .templating import render_template
 
 
@@ -56,3 +63,26 @@ def generate_apply_script(
         payload_json=json.dumps(canvas_payload),
         state=str(int(promoted_state)),
     )
+
+
+def generate_findprobe_script(registry: Registry) -> str:
+    """Console script: re-run every measurement the registry records and
+    diff the results against it.
+
+    The rows travel as a JSON literal (check-id, lane, measured date and
+    the recorded result) so the script's verdicts are string comparisons
+    against exactly what FINDINGS.md says. The embedding happens HERE, as
+    for apply; the template receives a ready JavaScript literal, indented
+    to sit inside the async body.
+    """
+    rows = [
+        {
+            "checkId": f.check_id,
+            "lane": f.lane,
+            "measured": f.measured.isoformat(),
+            "result": f.result,
+        }
+        for f in registry
+    ]
+    findings_json = json.dumps(rows, indent=2).replace("\n", "\n  ")
+    return render_template("findprobe.js.j2", version=__version__, findings_json=findings_json)

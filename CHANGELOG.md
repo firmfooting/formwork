@@ -10,6 +10,29 @@ the version literal in `pyproject.toml` and `src/formwork/__init__.py`.
 Everything merged since 0.2.1: full-page authoring (PR #2, milestones M1–M3)
 and the M3-DSL and M4 release work.
 
+### Unreleased (M6, 2026-09-07)
+
+- **`FINDINGS.md`**, the findings registry: one row per measured claim with
+  a check-id (`page.<scope>.<question>`), the claim, the measured date, the
+  compact result, an evidence pointer into a fixture and the re-probe
+  command. Seeded with the 17 claims of the 2026-09-06 runs, the
+  hand-measured section-emphasis mechanism and the M5 property, layout and
+  list-binding rows included. `src/formwork/findings.py` parses and
+  validates it on load.
+- **Compile staleness warning.** `formwork compile` warns, per check-id,
+  when the newest row a spec relies on is older than `--findings-max-age`
+  (default 90 days), naming the parts that rely on it, its age and the
+  re-probe command. Never a refusal. Silent when no `FINDINGS.md` is in the
+  working directory; `--findings` names one explicitly.
+- **`formwork gen findprobe`**, the re-probe lane: re-runs every recorded
+  measurement (the discover legs, now the shared partials
+  `_probe_setup.js.j2` and `_probe_legs.js.j2`, plus a SavePage
+  section-emphasis leg on a second scratch page), prints "same" or
+  "DIFFERS" per row and downloads `formwork-findprobe.json`. Golden
+  `tests/fixtures/expected/findprobe.js`.
+- Discover's comments cite the registry rows where they used to name the
+  measurement as pending; the paste-in's bytes otherwise stay as before.
+
 ### Added
 
 - **Text parts.** A part may be `text:` instead of `component:`; it compiles
