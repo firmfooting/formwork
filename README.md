@@ -67,6 +67,19 @@ creating pages from nothing.
    the scratch page, and downloads `formwork-discovery.json` as the site's
    component catalogue.
 
+   The same run measures styling, under an additive `styling` key: seven
+   text controls carrying styled HTML (colour, font size, background, a
+   styled link, `<mark>`, block alignment, SharePoint's own RTE classes),
+   five one-control sections each carrying one section-level variant
+   (`zoneEmphasis` 2 and 3 with an unknown key, collapsible
+   `zoneGroupMetadata`, full-width `sectionFactor` 0, vertical
+   `layoutIndex` 2), and a second save through the page model
+   (`SavePageAsDraft`) with a marker control, so the document says whether
+   that path applied the body or ignored it. Each sample is recorded as
+   requested and as persisted; the `styling.unmeasured` list names what the
+   run cannot settle (theme, section background, section spacing,
+   rendering) and why.
+
 2. **Declare** — write the page you want:
 
    ```yaml
@@ -110,8 +123,12 @@ creating pages from nothing.
    placed that the site did not declare placeable.
 
    The text-control shape the compiler emits is the one the discover script
-   sends; what SharePoint persists of it is the measurement the discover
-   probe collects and has not yet been read from a live site.
+   sends. Measured live (2026-09-06, a stock team site): SharePoint stores
+   that shape byte-for-byte except that `:` inside the control's HTML is
+   rewritten as `&#58;`. Compiling text parts therefore requires a discovery
+   document whose `textControls` samples persisted with only that
+   difference; a document without the measurement, or one whose samples
+   differ in any other way, refuses to compile text parts and says why.
 
 ## The canvas contract
 
