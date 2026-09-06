@@ -225,11 +225,11 @@ def _text_control(body_html: str, placement: Placement) -> Control:
 
     The shape is the one the discover script sends (discover.js.j2, step
     3a): the control data carries ``editorType`` and no ``webPartId``, and
-    the HTML is the inner content of a ``data-sp-rte`` child.
-    TODO(measure, 2026-09-06): the persisted shape has not yet been
-    read from a live site; when a discovery document carries
-    ``textControls.persisted``, compare it with ``requested`` and fold any
-    difference (wrapper, ``editorType``, surviving tags) in here.
+    the HTML is the inner content of a ``data-sp-rte`` child. Measured
+    live (shauntestazure, 2026-09-06): SharePoint stores exactly this,
+    rewriting only ``:`` as ``&#58;`` inside the HTML, so nothing is folded
+    here; :func:`compile_page` gates on the discovery document's own
+    samples via :meth:`TextControlSample.persisted_matches`.
     """
     control_data = {
         "controlType": 4,

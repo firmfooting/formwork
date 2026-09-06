@@ -379,6 +379,36 @@ def test_persisted_matches_survives_the_colon_normalisation():
     assert [s.persisted_matches() for s in cat.text_controls] == [True, None]
 
 
+# A live-shaped sample (shauntestazure, 2026-09-06): the inner HTML carries
+# colons in a href, a style and the running text, and the control-data
+# attribute is already entity-escaped on BOTH sides. TEXT_HTML above has no
+# colon, which is how the one-sided fold went unnoticed.
+LIVE_HTML = (
+    '<h2>Formwork text probe</h2><p>Paragraph with <b>bold</b>, '
+    '<a href="https://example.com/">a link</a> and '
+    '<span style="color:#a4262c;">a colour span</span>. Note: done.</p>'
+)
+LIVE_REQUESTED = TEXT_BLOCK.replace(TEXT_HTML, LIVE_HTML)
+LIVE_PERSISTED = TEXT_BLOCK.replace(TEXT_HTML, LIVE_HTML.replace(":", "&#58;"))
+
+
+def test_persisted_matches_folds_the_colon_on_both_sides():
+    """The requested block's attribute already spells ':' as '&#58;'; the
+    persisted block additionally spells it so in the inner HTML. Folding the
+    persisted side alone compared every real sample unequal."""
+    assert ":" in LIVE_REQUESTED and "&#58;" in LIVE_REQUESTED  # both spellings, one side
+    assert ":" not in LIVE_PERSISTED.split('data-sp-rte=""')[1]  # inner HTML fully rewritten
+    doc = copy.deepcopy(DISCOVERY_WITH_TEXT)
+    doc["textControls"]["requested"][0] |= {"html": LIVE_HTML, "canvas": LIVE_REQUESTED}
+    doc["textControls"]["persisted"][0]["canvas"] = LIVE_PERSISTED
+    cat = parse_discovery(doc)
+    sample = cat.text_controls[0]
+    assert sample.persisted != sample.requested
+    assert sample.persisted_matches() is True
+    spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>a: b</p>"}]}]}
+    assert "<p>a: b</p>" in compile_page(spec, cat).canvas
+
+
 def test_compile_accepts_colon_normalised_measurement():
     cat = parse_discovery(DISCOVERY_WITH_TEXT)
     # Force the persisted sample through the same normalisation: compile must

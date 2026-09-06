@@ -52,9 +52,13 @@ class TextControlSample:
         Measured live (shauntestazure, 2026-09-06): SharePoint rewrites ``:``
         as ``&#58;`` inside a text control's inner HTML — the same entity
         style the canvas attributes use — and leaves everything else
-        byte-identical. So equality is judged after folding that one
-        normalisation back, and only that one: any other difference is a
-        real shape change and returns False.
+        byte-identical. So equality is judged with the colon's spelling
+        folded on BOTH sides, and nothing else folded: the requested block
+        already carries ``&#58;`` in its control-data attribute, so folding
+        the persisted side alone un-escapes that attribute on one side only
+        and every real sample compared unequal (found 2026-09-06 against the
+        live document; the fixture's sample had no colon to rewrite). Any
+        other difference is a real shape change and returns False.
 
         None when the sample was never persisted (or the stored bytes could
         not be read), in which case no claim is made.
@@ -63,7 +67,12 @@ class TextControlSample:
             return None
         if self.persisted == self.requested:
             return True
-        return self.persisted.replace("&#58;", ":") == self.requested
+        return _fold_colons(self.persisted) == _fold_colons(self.requested)
+
+
+def _fold_colons(block: str) -> str:
+    """The one measured normalisation, folded: ``&#58;`` and ``:`` read alike."""
+    return block.replace("&#58;", ":")
 
 
 @dataclass(frozen=True)
