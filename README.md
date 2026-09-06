@@ -57,6 +57,11 @@ target site                     your laptop                          target site
    console on any page of the target site. It creates the page through the
    `sitepages` API, writes the canvas with an item MERGE under `If-Match`,
    then reads back what SharePoint stored and compares it byte for byte.
+   If the bytes differ the script throws, naming the new page's item id and
+   URL: the page exists with what SharePoint stored, and Formwork does not
+   recycle it. Keep it or recycle it yourself. Compile emits text HTML in
+   the stored spelling (`:` as `&#58;`, see "Text parts"), so that rewrite
+   does not trip the check.
 
 ## Writing the spec
 
@@ -101,7 +106,11 @@ characters are refused.
 Text parts compile only against a discovery document whose text probes
 persisted with at most the `:` to `&#58;` rewrite (measured 2026-09-06, see
 below). A document without that measurement, or whose samples differ in any
-other way, refuses to compile text parts and says why.
+other way, refuses to compile text parts and says why. Compile emits the
+inner HTML in that stored spelling, every `:` as `&#58;` (in a style
+attribute, an absolute `href`, running text), so the payload carries what
+SharePoint will store and apply's byte-for-byte read-back holds. The
+compiled part record keeps the HTML as you wrote it.
 
 ### Styled text
 
@@ -179,8 +188,11 @@ The second workflow moves an existing page between sites.
    markup (`CanvasContent1`) and source identity.
 
 2. **Inspect** — `formwork inspect formwork-bundle.json` lists every
-   site-bound value in the bundle: `baseUrl` links, `siteId`/`webId`
-   properties, list ids and urls, searchable plain texts.
+   site-bound value in the page's canvas, web part by web part: `baseUrl`
+   links, `siteId`/`webId` properties, list ids and urls, searchable plain
+   texts, and, detected but never rewritten, other `link` entries and
+   `image` sources. Each is addressed by the web part's `instanceId`. The
+   bundle carries no separate web-part list; the canvas is the source.
 
 3. **Process** — rewrite what your mapping resolves and report the rest:
 
@@ -220,14 +232,24 @@ exact source text. Everything you omit stays as extracted and is reported as
 unresolved. Any console session on the target site can read
 `/_api/web?$select=Id,Title,Url` and `/_api/site?$select=Id,Url` for the ids.
 
+Two kinds are report-only: `link` (a web part's `links` entries other than
+`baseUrl`, such as a Quick links item's `items[n].sourceItem.url`) and
+`image` (`imageSources`). Inspect and process list them; nothing rewrites
+them, because no mapping key for them has been measured: such a value may
+be external, page-relative or list-bound, and what a target site wants there
+is not known. They stay as extracted.
+
+Process re-serialises only the web parts whose values actually changed; a
+mapping that restates an extracted value leaves that web part's bytes alone.
+
 Copied: page title, description, layout type, promoted state, section
 structure, column widths, web part choices and properties — everything in the
 canvas. Not copied: the content behind the web parts (news posts, list items,
 documents; a News web part on the target shows the target's news, and a
 Document library web part needs its `lists` mapping to point at a library
 that exists there), page permissions, analytics, comments, version history.
-Images referenced as `imageSources` stay pointed at the source site until
-you map them.
+Images referenced as `imageSources` stay pointed at the source site; they are
+report-only (above), with no mapping key yet.
 
 ## The canvas contract
 
@@ -235,11 +257,16 @@ A modern page's layout lives in `CanvasContent1` as HTML-encoded canvas
 markup. Each control is a `div` whose `data-sp-controldata` and
 `data-sp-webpartdata` attributes carry entity-escaped JSON; a text control
 carries its HTML in a `data-sp-rte` child instead of web-part data. Formwork
-parses this markup, keeps untouched controls byte-exact, and re-escapes only
-the controls it changed, in SharePoint's own escaping style (`&#123;`,
-`&quot;`, `&#58;`), which is not what generic HTML escapers produce. Compiled
-pages are built from the same parser, so what compile emits is what apply's
-read-back compares against.
+parses this markup and addresses each web part by its `instanceId`, the
+per-control GUID (the web part's `id` is the component type and repeats when
+a page places the same part twice). Untouched controls stay byte-exact; a
+control is re-escaped only when a value on it actually changed, in
+SharePoint's own escaping style (`&#123;`, `&quot;`, `&#58;`), which is not
+what generic HTML escapers produce. That holds on both paths: process
+rewrites the extracted canvas in place, control by control, and compile
+builds its controls from the same model. Text HTML is emitted with `:` as
+`&#58;`, the stored spelling. So what process or compile emits is what
+apply's read-back compares against.
 
 ## Measured SharePoint behaviour
 

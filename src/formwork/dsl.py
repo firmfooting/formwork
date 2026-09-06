@@ -334,16 +334,41 @@ def _control_for(component: Component, placement: Placement) -> Control:
     return control
 
 
+def stored_text_html(html: str) -> str:
+    """A text part's HTML as SharePoint stores it: every ``:`` as ``&#58;``.
+
+    Measured live (shauntestazure, 2026-09-06,
+    tests/fixtures/discovery.styling.json): the item MERGE the apply
+    paste-in uses stored each colon-bearing text sample with ``:``
+    rewritten as ``&#58;`` and nothing else changed. ``styling.styleSamples``
+    ``color`` was requested as ``style="color:#a4262c;"`` and persisted as
+    ``style="color&#58;#a4262c;"``; ``font-size``, ``background``,
+    ``styled-link`` (a colon in the href and two in the style) and
+    ``block-align`` likewise; the two colon-free samples, ``mark`` and
+    ``rte-classes``, came back byte-identical. Over the whole scratch page
+    the rewrite is the only growth: ``requestedCanvasChars`` 97907 against
+    ``storedCanvasChars`` 97947. This is the one rewrite, so this is the one
+    fold; ``tests/test_styling_evidence.py`` pins that it reproduces the
+    stored bytes of all seven samples.
+    """
+    return html.replace(":", "&#58;")
+
+
 def _text_control(body_html: str, placement: Placement) -> Control:
     """Build one text canvas control: controlType 4, no web part.
 
     The shape is the one the discover script sends (discover.js.j2, step
     3a): the control data carries ``editorType`` and no ``webPartId``, and
-    the HTML is the inner content of a ``data-sp-rte`` child. Measured
-    live (shauntestazure, 2026-09-06): SharePoint stores exactly this,
-    rewriting only ``:`` as ``&#58;`` inside the HTML, so nothing is folded
-    here; :func:`compile_page` gates on the discovery document's own
-    samples via :meth:`TextControlSample.persisted_matches`.
+    the HTML is the inner content of a ``data-sp-rte`` child. The inner
+    HTML is emitted through :func:`stored_text_html`, the spelling
+    SharePoint stores, because the apply paste-in compares what it sent
+    with what was stored byte for byte: emitting a literal ``:`` created
+    the page and then failed that check for every styled part and every
+    absolute link (architecture review P1-1, 2026-09-06). Nothing else is
+    folded; :func:`compile_page` still gates on the discovery document's
+    own samples via :meth:`TextControlSample.persisted_matches`, whose
+    requested side is the probe's literal-colon HTML and so folds both
+    sides.
     """
     control_data = {
         "controlType": 4,
@@ -362,7 +387,7 @@ def _text_control(body_html: str, placement: Placement) -> Control:
         web_part_data=None,
         controldata_raw="",
         webpartdata_raw=None,
-        body=f'<div data-sp-rte="">{body_html}</div></div>',
+        body=f'<div data-sp-rte="">{stored_text_html(body_html)}</div></div>',
     )
     control.mark_dirty()
     return control

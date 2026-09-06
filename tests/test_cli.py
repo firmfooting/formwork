@@ -32,6 +32,17 @@ class TestInspect:
         assert "Document library" in out
         assert "selectedListId" in out
 
+    def test_inspect_counts_the_canvas_web_parts_and_names_report_only_kinds(
+        self, bundle_path, capsys
+    ):
+        # The bundle carries no web-part list: the count and the refs come
+        # from the canvas. Quick links items are link refs, report-only.
+        assert main(["inspect", str(bundle_path)]) == 0
+        out = capsys.readouterr().out
+        assert "(4 web parts)" in out
+        assert "link     Quick links" in out
+        assert "16 site-bound refs found (2 link/image: detected, not rewritten)." in out
+
     def test_inspect_json_output(self, bundle_path, capsys):
         assert main(["inspect", str(bundle_path), "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
@@ -66,6 +77,16 @@ class TestProcess:
         assert payload["title"] == "Formwork live test"
         assert "CanvasContent1" not in payload["canvas"]  # canvas is raw markup
         assert payload["unresolved"]  # quick-links items stay flagged
+        assert {u["kind"] for u in payload["unresolved"]} == {"list", "text", "link"}
+        # The rewrite reached the canvas: the new ids and the retitled
+        # library are in the markup that apply will send.
+        assert mapping["siteId"] in payload["canvas"]
+        assert "Reports library" in payload["canvas"]
+        # baseUrl restates the source: resolved, nothing to write. siteId and
+        # webId change News and Quick links; the override changes Document
+        # library: three controls re-serialised, Site activity untouched.
+        out = capsys.readouterr().out
+        assert "7 refs resolved, 3 control(s) rewritten, 9 unresolved" in out
 
     def test_process_reports_unresolved_to_stderr(self, bundle_path, tmp_path, capsys):
         mapping = {"baseUrl": "https://x/sites/T"}
@@ -82,7 +103,11 @@ class TestProcess:
             ]
         )
         assert rc == 0
-        assert "unresolved" in capsys.readouterr().err.lower()
+        err = capsys.readouterr().err
+        assert "unresolved" in err.lower()
+        # link refs are named as report-only, next to the mapping hint.
+        assert "[link] webParts[" in err and "(report-only)" in err
+        assert "link and image values are report-only" in err
 
 
 class TestGenApply:

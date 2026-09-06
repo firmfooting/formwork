@@ -1,9 +1,11 @@
 """Extraction bundle parsing and validation.
 
 A bundle is the JSON file the extract paste-in downloads from the source
-page: schema envelope, source identity, page fields, section plan and
-web part inventory. Everything downstream (processing, apply) reads the
-bundle through the typed view built here.
+page: schema envelope, source identity, page fields and section plan.
+Everything downstream (processing, apply) reads the bundle through the
+typed view built here. The page's web parts are not a bundle field: they
+are read from the canvas itself (:mod:`formwork.refs`), which is the one
+place they exist.
 """
 
 from __future__ import annotations
@@ -34,7 +36,6 @@ class Bundle:
     meta: dict[str, Any] = field(default_factory=dict)
     page: dict[str, Any] = field(default_factory=dict)
     sections: list[dict[str, Any]] = field(default_factory=list)
-    web_parts: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -72,6 +73,9 @@ def parse_bundle(data: dict[str, Any] | str) -> Bundle:
         if key not in source:
             raise ValueError(f"bundle source is missing required key: {key}")
 
+    # Bundles from 0.3.0 and earlier carry a "webParts" key (always the empty
+    # list the extract paste-in wrote). It is ignored: the canvas is the
+    # source of the web parts (architecture review P1-2, 2026-09-06).
     return Bundle(
         schema=data["schema"],
         extracted_at=data.get("extractedAt", ""),
@@ -83,6 +87,5 @@ def parse_bundle(data: dict[str, Any] | str) -> Bundle:
         meta=data.get("meta", {}),
         page=data["page"],
         sections=data.get("sections", []),
-        web_parts=data.get("webParts", []),
         raw=data,
     )

@@ -228,7 +228,17 @@
     "| canvas stored:", storedLen, "chars",
     "| byte-exact:", byteExact);
   if (!byteExact) {
-    throw new Error("canvas mismatch: sent " + PAYLOAD.canvas.length + ", stored " + storedLen);
+    // The page exists: it was created and merged before this check ran.
+    // Nothing here recycles it (an unmeasured auto-delete would be a new
+    // behaviour); keeping or recycling it is the operator's call. Compile
+    // spells ':' as '&#58;' inside text HTML, the stored spelling measured
+    // 2026-09-06, so a mismatch here is a real difference, not that rewrite.
+    throw new Error(
+      "canvas mismatch: sent " + PAYLOAD.canvas.length + " chars, stored " + storedLen +
+      ". The page EXISTS with what SharePoint stored: item " + created.id + " at " +
+      location.origin + created.url +
+      ". Formwork does not recycle it; keep it or recycle it yourself."
+    );
   }
   console.log("[formwork] verify OK — reload the new page to inspect it.");
 })().catch(err => { console.error("[formwork] apply failed:", err); });

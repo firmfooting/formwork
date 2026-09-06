@@ -29,6 +29,7 @@ from formwork.dsl import (
     UNENCODABLE_SECTION_KEYS,
     ZONE_EMPHASIS_VALUES,
     compile_page,
+    stored_text_html,
 )
 from test_dsl import DISCOVERY
 
@@ -94,6 +95,27 @@ class TestStyledText:
         assert identical == ["mark", "rte-classes"]
         for label, requested, _ in rows:
             assert (":" not in requested["html"]) == (label in identical), label
+
+    def test_compile_emits_the_bytes_sharepoint_stored(self):
+        """The compiler writes text HTML in the stored spelling, ':' as
+        '&#58;', so apply's byte-exact read-back holds for styled text and
+        absolute links instead of failing after the page is created (review
+        P1-1, 2026-09-06). Pinned against all seven samples: the fold
+        reproduces each persisted inner HTML exactly, and compiling each
+        sample's HTML against this very document emits those bytes."""
+        cat = parse_discovery(styling_document())
+        for label, requested, persisted in paired(styling()["styleSamples"]):
+            stored_inner = persisted["canvas"].split('<div data-sp-rte="">', 1)[1]
+            stored_inner = stored_inner.split("</div>", 1)[0]
+            assert stored_inner == stored_text_html(requested["html"]), label
+            spec = {
+                "page": "T",
+                "sections": [{"type": "one", "parts": [{"text": requested["html"]}]}],
+            }
+            result = compile_page(spec, cat)
+            assert f'<div data-sp-rte="">{stored_inner}</div>' in result.canvas, label
+            # The part record keeps the author's HTML; only the canvas is folded.
+            assert result.parts[0]["html"] == requested["html"], label
 
     def test_the_readme_table_lists_exactly_the_measured_samples(self):
         readme = README.read_text(encoding="utf-8")

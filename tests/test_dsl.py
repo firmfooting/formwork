@@ -12,6 +12,7 @@ from formwork.dsl import (
     ZONE_EMPHASIS_VALUES,
     DslError,
     compile_page,
+    stored_text_html,
 )
 
 
@@ -553,8 +554,46 @@ def test_persisted_matches_folds_the_colon_on_both_sides():
     sample = cat.text_controls[0]
     assert sample.persisted != sample.requested
     assert sample.persisted_matches() is True
+    # The gate folds both sides; the emitted canvas is the stored spelling,
+    # because apply compares byte for byte and does not fold (P1-1).
     spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>a: b</p>"}]}]}
-    assert "<p>a: b</p>" in compile_page(spec, cat).canvas
+    canvas = compile_page(spec, cat).canvas
+    assert '<div data-sp-rte=""><p>a&#58; b</p></div>' in canvas
+    assert "<p>a: b</p>" not in canvas
+
+
+def test_compile_stores_colons_the_way_sharepoint_does():
+    """A colon in a style attribute, in running text and in an absolute
+    href is emitted as '&#58;': the one rewrite measured 2026-09-06
+    (tests/fixtures/discovery.styling.json, styleSamples: 'color' requested
+    style="color:#a4262c;" and persisted style="color&#58;#a4262c;"; the
+    two colon-free samples came back byte-identical). Emitting ':' created
+    the page and then failed apply's byte-exact read-back on every styled
+    part and every absolute link (review P1-1)."""
+    cat = parse_discovery(DISCOVERY_WITH_TEXT)
+    html = (
+        '<p><span style="color:#a4262c;">Note:</span> '
+        '<a href="https://example.com/a">see</a> 10:30</p>'
+    )
+    spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": html}]}]}
+    result = compile_page(spec, cat)
+    inner = (
+        '<p><span style="color&#58;#a4262c;">Note&#58;</span> '
+        '<a href="https&#58;//example.com/a">see</a> 10&#58;30</p>'
+    )
+    assert stored_text_html(html) == inner
+    assert f'<div data-sp-rte="">{inner}</div></div>' in result.canvas
+    assert ":" not in result.canvas.split('data-sp-rte=""', 1)[1]
+    # The part record keeps the author's HTML; only the canvas is folded.
+    assert result.parts[0]["html"] == html
+    # Still byte-exact through the parser, dirty path included.
+    parsed = Canvas.parse(result.canvas)
+    assert parsed.render() == result.canvas
+    parsed.controls[0].mark_dirty()
+    assert parsed.render() == result.canvas
+    # Nothing else is touched: a colon-free part is emitted as written.
+    plain = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "<p>a b</p>"}]}]}
+    assert '<div data-sp-rte=""><p>a b</p></div>' in compile_page(plain, cat).canvas
 
 
 def test_compile_accepts_colon_normalised_measurement():

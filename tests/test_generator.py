@@ -447,6 +447,32 @@ def test_prelude_carries_no_post_json_helper():
         assert "postJson" not in generate(), name
 
 
+def test_apply_mismatch_names_the_page_it_leaves_behind_and_never_recycles_it():
+    """The byte-exact check runs after the page is created and merged, so a
+    mismatch leaves a page behind. The thrown error says the page exists,
+    names its item id and URL, and states that Formwork does not recycle
+    it; nothing in the apply script calls recycle (review P1-1, 2026-09-06).
+    The comparison itself stays strict: compile emits ':' as '&#58;' in text
+    HTML (test_dsl, test_styling_evidence), so nothing here folds."""
+    for name in ("apply", "apply-payload"):
+        script = GENERATORS[name]()
+        assert "stored.CanvasContent1 === PAYLOAD.canvas" in script, name
+        assert 'The page EXISTS with what SharePoint stored: item " + created.id' in script, name
+        assert "location.origin + created.url" in script, name
+        assert "Formwork does not recycle it; keep it or recycle it yourself." in script, name
+        assert "recycle(" not in script and "/recycle" not in script, name
+        assert script.index("[formwork] page created:") < script.index("The page EXISTS"), name
+
+
+def test_extract_bundle_carries_no_web_part_list():
+    """The bundle's web parts are read from its canvas; the extract script
+    writes no ``webParts`` key (it only ever wrote an empty list, and a
+    rewriter that read it rewrote nothing: review P1-2, 2026-09-06)."""
+    script = generate_extract_script()
+    assert "webParts" not in script
+    assert "page: page,\n    sections: [],\n  };" in script
+
+
 def test_extract_filter_literal_doubles_apostrophes():
     # The same OData rule applies to the $filter literal the extract script
     # builds from the page's file name (a page named "Bob's page.aspx" is

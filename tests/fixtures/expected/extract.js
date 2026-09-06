@@ -218,7 +218,6 @@
     meta: { webTitle: web.d.Title, formworkVersion: "0.3.0" },
     page: page,
     sections: [],
-    webParts: [],
   };
 
   const blob = new Blob([JSON.stringify(bundle, null, 2)],
