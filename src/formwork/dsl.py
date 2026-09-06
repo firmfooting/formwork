@@ -16,6 +16,7 @@ import json
 import re
 import warnings
 from dataclasses import dataclass, field
+from math import isnan
 from typing import Any
 
 from .canvas import Canvas, Control, escape_attribute
@@ -142,24 +143,51 @@ MEASURED_FACTOR_SETS: tuple[tuple[int, ...], ...] = (
     (4, 8),
 )
 
-#: The four properties ``bind:`` writes, exactly the key set the M5 binding
-#: probe measured persisting for Document library and List parts
-#: (discovery.m5.json listBindings, 2026-09-07): all six requested binding
-#: blocks came back byte-exact on both list and library targets.
+#: The bind keys a spec may write. ``listId``/``listUrl`` required,
+#: ``viewId`` optional (the measured shapes all carry a view id, but the
+#: key set with an omitted view was not measured as *refused* — binding
+#: without a view is the documented default-view behaviour).
 BIND_KEYS: frozenset[str] = frozenset({"listId", "listUrl", "viewId"})
 
-#: Where those keys land in the web part's ``properties``.
+#: Where those keys land in the web part's ``properties``. The URL pair is
+#: the measured shape (discovery.m5.json listBindings, 2026-09-07): every
+#: bound part stored ``selectedListUrl`` SERVER-relative
+#: (``/sites/<web>/<list>``) beside ``webRelativeListUrl`` web-relative
+#: (no leading slash). The spec's ``listUrl`` stays web-relative (the
+#: ergonomic input); the server-relative form is derived at compile time
+#: from the discovery document's web URL.
 BIND_TARGET_KEYS: dict[str, str] = {
     "listId": "selectedListId",
     "listUrl": "selectedListUrl",
     "viewId": "selectedViewId",
 }
 
+#: The rest of the measured binding shape: every bound ListWebPart stored
+#: these alongside the selected* keys (discovery.m5.json, 2026-09-07).
+BIND_SHAPE_EXTRAS: dict[str, Any] = {
+    "webpartHeightKey": 4,
+    "hideCommandBar": False,
+}
+
+#: Components with a measured binding sample (discovery.m5.json
+#: listBindings, 2026-09-07: ListWebPart bound to list and library
+#: targets, 4/4 with the selected* key set). Binding other components is
+#: unmeasured and refused — the Quick links rows in the same block carry
+#: none of the selected* keys.
+BIND_COMPONENTS: frozenset[str] = frozenset({"ListWebPart"})
+
+#: The web-part property that picks a multi-entry component's preconfigured
+#: entry (ListWebPart entry 0 'List' vs entry 1 'Document library'):
+#: measured (discovery.m5.json components, 2026-09-07).
+DOC_LIB_ENTRY_PROPERTY = ("isDocumentLibrary", True)
+
 #: Section geometry: a row of factors must sum to this, each 1-12.
 MAX_COLUMNS = 3
 ROW_SPAN = 12
 
-#: GUID shape for bind ids. Case-insensitive, bare braces tolerated.
+#: GUID shape for bind ids: bare or paired braces, case-insensitive; the
+#: value is normalised to bare lowercase before storing (every measured id
+#: is bare lowercase — discovery.m5.json listBindings, 2026-09-07).
 _GUID_RE = re.compile(
     r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$"
 )
@@ -178,12 +206,24 @@ def _flat_scalars(properties: Any, ordinal: int) -> dict[str, Any]:
     if not isinstance(properties, dict):
         raise DslError(f"part {ordinal}: 'properties' must be a mapping of name to value")
     for name, value in properties.items():
-        if isinstance(value, (dict, list)) or value is None:
+        # Allow-list, not deny-list: JSON-serialisable scalars only. The
+        # measured sample types are exactly bool and str (webpartProperties,
+        # 2026-09-07). A YAML unquoted date resolves to datetime.date, which
+        # json.dumps raises TypeError on — reachable from an ordinary spec
+        # (properties: {startDate: 2026-09-07}), so it refuses as a DslError
+        # (review 2026-09-07 P2).
+        if not isinstance(value, (str, int, float, bool)):
             raise DslError(
                 f"part {ordinal}: properties.{name}: only flat scalar values are"
                 " measured (discovery.m5.json webpartProperties, 2026-09-07:"
-                " 12/12 flat changes persisted byte-exact); nested objects, arrays"
-                " and null are unmeasured and refused."
+                " 12/12 flat changes persisted byte-exact); got"
+                f" {type(value).__name__}. Nested objects, arrays, null and"
+                " non-JSON scalars (YAML dates, binaries) are refused. Quote"
+                " dates as strings if the property takes one."
+            )
+        if isinstance(value, float) and isnan(value):
+            raise DslError(
+                f"part {ordinal}: properties.{name}: NaN is not JSON-serialisable"
             )
     return dict(properties)
 
@@ -212,19 +252,80 @@ def _type_check_against_samples(
             )
 
 
-def part_bind(part: dict[str, Any], ordinal: int, component: Component) -> dict[str, Any]:
+def _bind_guid(key: str, value: Any, ordinal: int) -> str:
+    """A bind id as the probe measured storing it: bare lowercase GUID."""
+    if not isinstance(value, str) or not _GUID_RE.match(value):
+        raise DslError(
+            f"part {ordinal}: bind.{key} must be a GUID, got {value!r}"
+            " (the probe bound real ids read from _api/web/lists)"
+        )
+    # Asymmetric braces refuse: the regex's independent optionals would
+    # otherwise accept "{guid" and "guid}" (review 2026-09-07 P2).
+    if (value.startswith("{") != value.endswith("}")) and ("{" in value or "}" in value):
+        raise DslError(
+            f"part {ordinal}: bind.{key} GUID braces must be paired, got {value!r}"
+        )
+    # Normalise to the bare lowercase form every measured id carries
+    # (review 2026-09-07 P2: {GUID} and mixed case reached stored bytes in
+    # a shape no probe sent).
+    return value.strip("{}").lower()
+
+
+def _bind_url(value: Any, ordinal: int, cat: Catalogue) -> tuple[str, str]:
+    """The two stored spellings of a bound list's URL.
+
+    The probe stored selectedListUrl SERVER-relative and
+    webRelativeListUrl web-relative (discovery.m5.json persisted rows,
+    2026-09-07); the server-relative form derives from the discovery
+    document's web URL. The spec's value stays web-relative.
+    """
+    if not isinstance(value, str) or not value or value.startswith("/") or "://" in value:
+        raise DslError(
+            f"part {ordinal}: bind.listUrl must be web-relative (e.g."
+            f" 'Shared Documents'), got {value!r}. The server-relative form"
+            " is derived at compile time from the discovery document's web"
+            " URL, matching the measured stored shape."
+        )
+    web_path = cat.web_server_relative_path
+    if not web_path:
+        raise DslError(
+            f"part {ordinal}: the discovery document carries no web URL, so"
+            " the server-relative selectedListUrl cannot be derived; re-run"
+            " 'formwork gen discover' against the target site."
+        )
+    return f"{web_path}/{value}", value
+
+
+def part_bind(
+    part: dict[str, Any],
+    ordinal: int,
+    component: Component,
+    cat: Catalogue | None = None,
+) -> dict[str, Any]:
     """The web-part ``properties`` a part's ``bind:`` key contributes.
 
-    ``bind: {listId, listUrl, viewId?}`` writes the exact key set the M5
-    binding probe measured persisting (selectedListId, selectedListUrl,
-    webRelativeListUrl, selectedViewId — discovery.m5.json listBindings,
-    2026-09-07; 6/6 blocks byte-exact on list and library targets).
-    viewId is optional; listUrl must be web-relative (no leading slash,
-    no absolute URL), ids must be GUID-shaped.
+    ``bind: {listId, listUrl, viewId?}`` writes the binding key set the M5
+    probe measured persisting for ListWebPart (discovery.m5.json
+    listBindings, 2026-09-07): ``selectedListId``, ``selectedListUrl``
+    SERVER-relative (derived here from the discovery document's web URL),
+    ``webRelativeListUrl`` web-relative, ``selectedViewId``, plus the
+    measured companions ``webpartHeightKey: 4`` and ``hideCommandBar:
+    false``. The spec's ``listUrl`` stays web-relative — the ergonomic
+    input; ids are GUID-shaped and normalised to the bare lowercase form
+    every measured id carries. Binding a component without a measured
+    binding sample refuses.
     """
     bind = part.get("bind")
     if bind is None:
         return {}
+    if component.alias not in BIND_COMPONENTS:
+        measured = ", ".join(sorted(BIND_COMPONENTS))
+        raise DslError(
+            f"part {ordinal}: bind on {component.alias} is unmeasured: the M5"
+            f" probe bound {measured} only (discovery.m5.json listBindings,"
+            " 2026-09-07 — the Quick links rows carry none of the selected*"
+            " keys). Bind is refused rather than guessed."
+        )
     if not isinstance(bind, dict):
         raise DslError(f"part {ordinal}: 'bind' must be a mapping (listId, listUrl, viewId?)")
     unknown = sorted(set(bind) - BIND_KEYS)
@@ -239,29 +340,22 @@ def part_bind(part: dict[str, Any], ordinal: int, component: Component) -> dict[
             f"part {ordinal}: bind is missing {', '.join(missing)}: the measured"
             " binding key set is listId + listUrl (+ optional viewId)"
         )
+    if cat is None:
+        # No catalogue in context: the server-relative selectedListUrl the
+        # probe measured storing cannot be derived.
+        raise DslError(
+            f"part {ordinal}: bind requires a discovery document to derive"
+            " the server-relative selectedListUrl the probe measured storing"
+        )
     out: dict[str, Any] = {}
     for key, target in BIND_TARGET_KEYS.items():
         if key not in bind:
             continue
-        value = bind[key]
         if key in ("listId", "viewId"):
-            if not isinstance(value, str) or not _GUID_RE.match(value):
-                raise DslError(
-                    f"part {ordinal}: bind.{key} must be a GUID, got {value!r}"
-                    " (the probe bound real ids read from _api/web/lists)"
-                )
-            out[target] = value
-            continue
-        # listUrl: web-relative. The measured values were container names
-        # ("Shared Documents") and library URLs without a leading slash.
-        if not isinstance(value, str) or not value or value.startswith("/") or "://" in value:
-            raise DslError(
-                f"part {ordinal}: bind.listUrl must be web-relative (e.g."
-                f" 'Shared Documents'), got {value!r}. Absolute URLs and leading"
-                " slashes are not what the probe measured storing."
-            )
-        out[target] = value
-        out["webRelativeListUrl"] = value
+            out[target] = _bind_guid(key, bind[key], ordinal)
+        else:
+            out[target], out["webRelativeListUrl"] = _bind_url(bind[key], ordinal, cat)
+    out |= dict(BIND_SHAPE_EXTRAS)
     return out
 
 
@@ -270,19 +364,29 @@ def section_factors(section: dict[str, Any], index: int) -> tuple[tuple[int, ...
     explicit = section.get("columns")
     type_name = section.get("type", "one")
     if explicit is not None and "type" in section:
+        factors_hint = SECTION_FACTORS.get(type_name) if isinstance(type_name, str) else None
         raise DslError(
             f"section {index}: give 'type' or 'columns', not both"
-            f" (type {type_name!r} means factors {SECTION_FACTORS[type_name]})"
+            + (
+                f" (type {type_name!r} means factors {factors_hint})"
+                if factors_hint
+                else f" (type {type_name!r} is not a known section type)"
+            )
         )
     if explicit is not None:
         if not isinstance(explicit, list) or not 1 <= len(explicit) <= MAX_COLUMNS:
             raise DslError(
                 f"section {index}: columns must be 1-3 factors, got {explicit!r}"
             )
-        try:
-            factors = tuple(int(f) for f in explicit)
-        except (TypeError, ValueError):
-            raise DslError(f"section {index}: columns must be integers, got {explicit!r}") from None
+        # Ints only, bools refused (catalogue.py's predicate): 8.9 silently
+        # becoming 8, or [true, 11] becoming [1, 11], is a spec bug
+        # (review 2026-09-07 P3).
+        for f in explicit:
+            if not isinstance(f, int) or isinstance(f, bool):
+                raise DslError(
+                    f"section {index}: columns must be integers, got {explicit!r}"
+                )
+        factors = tuple(explicit)
         if any(not 1 <= f <= ROW_SPAN for f in factors) or sum(factors) != ROW_SPAN:
             raise DslError(
                 f"section {index}: illegal factor set {factors!r}: each factor is"
@@ -483,16 +587,24 @@ def _control_for(
         "webPartId": web_part_id,
         "emphasis": dict(placement.emphasis),
     }
+    # Bound parts carry the measured listTitle in searchablePlainTexts
+    # (discovery.m5.json listBindings, 2026-09-07); unbound parts keep the
+    # empty serverProcessedContent every other probe control carried.
+    bind_props = part_bind(part, placement.ordinal, component, cat)
+    bound = "webRelativeListUrl" in bind_props
+    server_processed: dict[str, Any] = (
+        {"searchablePlainTexts": {"listTitle": part["bind"]["listUrl"]}} if bound else {}
+    )
     web_part_data = {
         "id": web_part_id,
         "instanceId": control_id,
         "title": part.get("displayTitle") or component.title,
         "description": "",
-        "serverProcessedContent": {},
+        "serverProcessedContent": server_processed,
         "dataVersion": "1.0",
         "properties": dict(component.default_properties)
         | _flat_scalars(part.get("properties"), placement.ordinal)
-        | part_bind(part, placement.ordinal, component),
+        | bind_props,
     }
     open_tag = (
         '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
@@ -614,6 +726,12 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
             "controlIndex": placement.control_index,
         }
         if placement.kind == "text":
+            if "bind" in placement.part:
+                raise DslError(
+                    f"part {placement.ordinal}: bind on text parts is unmeasured:"
+                    " the M5 probe bound ListWebPart only (discovery.m5.json"
+                    " listBindings, 2026-09-07). Put bind on a component part."
+                )
             body_html = part_html(placement)
             controls.append(_text_control(body_html, placement))
             parts_out.append(
@@ -626,7 +744,9 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
         declared_properties = _flat_scalars(
             placement.part.get("properties"), placement.ordinal
         )
-        bind_props = part_bind(placement.part, placement.ordinal, component)
+        bind_props = part_bind(
+            placement.part, placement.ordinal, component, cat
+        )
         overlap = sorted(set(declared_properties) & set(bind_props))
         if overlap:
             raise DslError(

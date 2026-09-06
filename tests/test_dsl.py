@@ -4,7 +4,6 @@ import copy
 import html
 import json
 import re
-import warnings
 
 import pytest
 
@@ -44,6 +43,9 @@ def make_component(cid: str, alias: str, title: str, hidden: bool = False):
 
 
 NEWS = make_component("11111111-1111-1111-1111-111111111111", "NewsWebPart", "News")
+LIST_PART = make_component(
+    "55555555-5555-5555-5555-555555555555", "ListWebPart", "List"
+)
 DOCLIB = make_component(
     "22222222-2222-2222-2222-222222222222", "DocumentLibraryWebPart", "Document library"
 )
@@ -55,7 +57,7 @@ EXTENSION = {"ComponentType": 2, "Id": "44444444-4444-4444-4444-444444444444", "
 DISCOVERY = {
     "schema": "formwork.discovery/v1",
     "web": {"url": "https://x/sites/T", "id": "w" * 32},
-    "components": [NEWS, DOCLIB, HIDDEN, EXTENSION],
+    "components": [NEWS, DOCLIB, HIDDEN, EXTENSION, LIST_PART],
     "placements": {
         "placed": ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"],
         "sections": [
@@ -660,7 +662,7 @@ M5_DISCOVERY = copy.deepcopy(DISCOVERY) | {
     "listBindings": {
         "requested": [
             _make_binding_sample(
-                "DocumentLibraryWebPart",
+                "ListWebPart",
                 "probe-docs",
                 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "Shared Documents",
@@ -814,15 +816,15 @@ class TestSectionColumns:
             )
 
     def test_unmeasured_but_legal_combo_warns_and_compiles(self):
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
+        with pytest.warns(UserWarning, match="unmeasured") as caught:
             result = compile_page(
-            self.spec([{"columns": [5, 7], "parts": [{"component": "NewsWebPart"}]}]),
-            parse_discovery(DISCOVERY),
-        )
-        # Compile succeeds; the measured set is recorded in the compile
-        # output for the operator to see (parts_out carries warnings).
+                self.spec([{"columns": [5, 7], "parts": [{"component": "NewsWebPart"}]}]),
+                parse_discovery(DISCOVERY),
+            )
+        # Compile succeeds, the warning genuinely fired, and it cites the
+        # measurement the caveat rests on.
         assert result.canvas
+        assert any("discovery.m5.json" in str(w.message) for w in caught)
 
 
 class TestBind:
@@ -843,7 +845,7 @@ class TestBind:
     def test_bind_writes_the_measured_key_set(self):
         control = self.control(
             {
-                "component": "DocumentLibraryWebPart",
+                "component": "ListWebPart",
                 "bind": {
                     "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                     "listUrl": "Shared Documents",
@@ -853,14 +855,21 @@ class TestBind:
         )
         props = control.web_part_data["properties"]
         assert props["selectedListId"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        assert props["selectedListUrl"] == "Shared Documents"
+        # Measured stored shape (discovery.m5.json listBindings, 2026-09-07):
+        # selectedListUrl SERVER-relative, webRelativeListUrl web-relative.
+        assert props["selectedListUrl"] == "/sites/T/Shared Documents"
         assert props["webRelativeListUrl"] == "Shared Documents"
         assert props["selectedViewId"] == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        assert props["webpartHeightKey"] == 4
+        assert props["hideCommandBar"] is False
+        # listTitle rides searchablePlainTexts as measured.
+        spc = control.web_part_data["serverProcessedContent"]
+        assert spc["searchablePlainTexts"]["listTitle"] == "Shared Documents"
 
     def test_bind_without_view_omits_selected_view_id(self):
         control = self.control(
             {
-                "component": "DocumentLibraryWebPart",
+                "component": "ListWebPart",
                 "bind": {
                     "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                     "listUrl": "Shared Documents",
@@ -874,7 +883,7 @@ class TestBind:
         with pytest.raises(DslError, match="collision"):
             self.control(
                 {
-                    "component": "DocumentLibraryWebPart",
+                    "component": "ListWebPart",
                     "bind": {"listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "listUrl": "x"},
                     "properties": {"selectedListId": "zz"},
                 }
@@ -884,7 +893,7 @@ class TestBind:
         with pytest.raises(DslError, match="GUID"):
             self.control(
                 {
-                    "component": "DocumentLibraryWebPart",
+                    "component": "ListWebPart",
                     "bind": {"listId": "not-a-guid", "listUrl": "x"},
                 }
             )
@@ -894,7 +903,7 @@ class TestBind:
             with pytest.raises(DslError, match="web-relative"):
                 self.control(
                     {
-                        "component": "DocumentLibraryWebPart",
+                        "component": "ListWebPart",
                         "bind": {
                             "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                             "listUrl": bad,
@@ -906,7 +915,7 @@ class TestBind:
         with pytest.raises(DslError, match="unknown bind key"):
             self.control(
                 {
-                    "component": "DocumentLibraryWebPart",
+                    "component": "ListWebPart",
                     "bind": {
                         "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         "listUrl": "x",
@@ -919,7 +928,7 @@ class TestBind:
         result = compile_page(
             self.spec(
                 {
-                    "component": "DocumentLibraryWebPart",
+                    "component": "ListWebPart",
                     "bind": {
                         "listId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         "listUrl": "Shared Documents",
@@ -931,3 +940,86 @@ class TestBind:
         part = result.parts[0]
         assert part["boundTo"]["listId"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         assert part["boundTo"]["listUrl"] == "Shared Documents"
+
+
+def _m5_doc() -> dict:
+    with open("tests/fixtures/discovery.m5.json", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+class TestBindAgainstMeasuredFixture:
+    """End-to-end: compile a bound spec against the REAL discovery.m5.json.
+
+    The review's test-quality demand (2026-09-07): the synthetic M5_DISCOVERY
+    must not be the only thing TestBind checks against. The real fixture is
+    the evidence; a spec binding to the probe's own list must produce a
+    properties block byte-equal to what SharePoint persisted (after the
+    colon fold and instance-specific keys: id/instanceId/title differ per
+    control and are not part of the binding contract).
+    """
+
+    @pytest.fixture()
+    def m5_catalogue(self):
+        return parse_discovery(_m5_doc())
+
+    def measured_props(self, entry: int) -> dict:
+        doc = _m5_doc()
+        row = doc["listBindings"]["persisted"][entry]
+        return row["webPartData"]["properties"]
+
+    def spec_props(self, cat, list_url: str, list_id: str, view_id: str) -> dict:
+        spec = {
+            "page": "T",
+            "sections": [
+                {
+                    "type": "one",
+                    "parts": [
+                        {
+                            "component": "ListWebPart",
+                            "bind": {
+                                "listId": list_id,
+                                "listUrl": list_url,
+                                "viewId": view_id,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        result = compile_page(spec, cat)
+        control = Canvas.parse(result.canvas).controls[0]
+        return control.web_part_data["properties"]
+
+    def test_library_binding_matches_measured_bytes(self, m5_catalogue):
+        doc = _m5_doc()
+        req = doc["listBindings"]["requested"][0]
+        stored = self.measured_props(0)
+        got = self.spec_props(
+            m5_catalogue,
+            req["webPartData"]["properties"]["webRelativeListUrl"],
+            stored["selectedListId"],
+            stored["selectedViewId"],
+        )
+        # Every measured binding key arrives at the measured value.
+        for key in (
+            "selectedListId",
+            "selectedListUrl",
+            "webRelativeListUrl",
+            "selectedViewId",
+            "webpartHeightKey",
+            "hideCommandBar",
+        ):
+            assert got[key] == stored[key], f"{key}: {got[key]!r} != stored {stored[key]!r}"
+
+    def test_list_target_binding_matches_measured_bytes(self, m5_catalogue):
+        doc = _m5_doc()
+        stored = self.measured_props(3)  # library-part-to-list
+        req = doc["listBindings"]["requested"][3]
+        got = self.spec_props(
+            m5_catalogue,
+            req["webPartData"]["properties"]["webRelativeListUrl"],
+            stored["selectedListId"],
+            stored["selectedViewId"],
+        )
+        assert got["selectedListUrl"] == stored["selectedListUrl"]
+        assert got["webRelativeListUrl"] == stored["webRelativeListUrl"]

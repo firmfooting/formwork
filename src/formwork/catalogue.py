@@ -26,8 +26,9 @@ the DSL reads them until a live run has been folded into a fixture.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -36,9 +37,14 @@ class Component:
     alias: str
     title: str
     hidden: bool
-    component_type: int  # 1 = web part, 2 = extension (per wire field ComponentType)
-    default_properties: dict[str, Any] = field(default_factory=dict)
+    component_type: int
+    default_properties: dict[str, Any]
     description: str = ""
+    entry_titles: tuple[str, ...] = ()
+    entry_properties: tuple[dict[str, Any], ...] = ()
+
+    def entry_count(self) -> int:
+        return len(self.entry_titles)
 
 
 @dataclass(frozen=True)
@@ -244,6 +250,18 @@ class Catalogue:
     layout_variants: tuple[LayoutVariant, ...] = ()
     probe_lists: tuple[ProbeList, ...] = ()
     list_bindings: tuple[ListBinding, ...] = ()
+    web_url: str = ""
+
+    @property
+    def web_server_relative_path(self) -> str:
+        """The web's path (e.g. '/sites/T'), from the discovery web URL.
+
+        This is what a bound part's server-relative ``selectedListUrl`` is
+        relative to: measured (discovery.m5.json listBindings, 2026-09-07)
+        storing selectedListUrl server-relative against the web root and
+        webRelativeListUrl web-relative.
+        """
+        return urlparse(self.web_url).path.rstrip("/")
 
     @property
     def count(self) -> int:
@@ -295,6 +313,12 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
         manifest = json.loads(raw.get("Manifest") or "{}")
         entries = manifest.get("preconfiguredEntries") or []
         first = entries[0] if entries else {}
+        entry_titles = tuple(
+            (entry.get("title") or {}).get("default", "") for entry in entries
+        )
+        entry_properties = tuple(
+            dict(entry.get("properties") or {}) for entry in entries
+        )
         components.append(
             Component(
                 component_id=raw.get("Id") or manifest.get("id", ""),
@@ -304,9 +328,12 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
                 component_type=int(raw.get("ComponentType", 0)),
                 default_properties=dict(first.get("properties") or {}),
                 description=(first.get("description") or {}).get("default", ""),
+                entry_titles=entry_titles,
+                entry_properties=entry_properties,
             )
         )
     bindings = discovery.get("listBindings")
+    web = discovery.get("web") or {}
     return Catalogue(
         components=tuple(components),
         text_controls=_text_controls(discovery.get("textControls")),
@@ -314,6 +341,7 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
         layout_variants=_layout_variants(discovery.get("layoutVariants")),
         probe_lists=_probe_lists(bindings),
         list_bindings=_list_bindings(bindings),
+        web_url=web.get("url", "") if isinstance(web, dict) else "",
     )
 
 
