@@ -7,9 +7,17 @@ import json
 import sys
 from typing import Any
 
+import yaml
+
 from . import __version__
 from .bundle import parse_bundle
-from .generator import generate_apply_script, generate_extract_script
+from .catalogue import parse_discovery
+from .dsl import compile_page
+from .generator import (
+    generate_apply_script,
+    generate_discover_script,
+    generate_extract_script,
+)
 from .refs import apply_plan, build_plan, scan
 
 
@@ -82,6 +90,57 @@ def _cmd_process(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gen_discover(_args: argparse.Namespace) -> int:
+    print(generate_discover_script())
+    return 0
+
+
+def _cmd_components(args: argparse.Namespace) -> int:
+    cat = parse_discovery(_read_json(args.discovery))
+    placeable = [c for c in cat.components if c.component_type == 1 and not c.hidden]
+    hidden = [c for c in cat.components if c.hidden]
+    if args.json:
+        print(json.dumps([c.__dict__ for c in cat.components], indent=2))
+        return 0
+    print(
+        f"site: {len(cat.components)} components "
+        f"({len(placeable)} placeable, {len(hidden)} hidden)"
+    )
+    for c in placeable:
+        print(f"  {c.alias:<40} {c.title}")
+    return 0
+
+
+def _cmd_compile(args: argparse.Namespace) -> int:
+    cat = parse_discovery(_read_json(args.discovery))
+    spec = _read_yaml(args.spec)
+    result = compile_page(spec, cat)
+    payload = {
+        "schema": "formwork.payload/v1",
+        "sourcePage": "(compiled from spec)",
+        "title": result.title,
+        "canvas": result.canvas,
+        "unresolved": [],
+    }
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    print(
+        f"payload written: {args.out} ({len(result.canvas)} chars of canvas, "
+        f"{len(result.parts)} parts)"
+    )
+    for part in result.parts:
+        print(
+            f"  section {part['section']}, column {part['column']}: "
+            f"{part['component']} ({part['title']})"
+        )
+    return 0
+
+
+def _read_yaml(path: str) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
 def _cmd_gen_apply(args: argparse.Namespace) -> int:
     payload = _read_json(args.payload)
     print(
@@ -113,6 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
         "extract", help="script that downloads the source page bundle"
     )
     gen_extract.set_defaults(func=_cmd_gen_extract)
+    gen_discover = gen_sub.add_parser(
+        "discover",
+        help="script that discovers placeable components via a scratch page",
+    )
+    gen_discover.set_defaults(func=_cmd_gen_discover)
     gen_apply = gen_sub.add_parser(
         "apply", help="script that creates the page on the target site"
     )
@@ -133,6 +197,28 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_p.add_argument("bundle", help="formwork-bundle.json from 'gen extract'")
     inspect_p.add_argument("--json", action="store_true", help="emit JSON")
     inspect_p.set_defaults(func=_cmd_inspect)
+
+    components_p = sub.add_parser(
+        "components", help="list placeable components from a discovery document"
+    )
+    components_p.add_argument(
+        "discovery", help="formwork-discovery.json from 'gen discover'"
+    )
+    components_p.add_argument("--json", action="store_true", help="emit JSON")
+    components_p.set_defaults(func=_cmd_components)
+
+    compile_p = sub.add_parser(
+        "compile",
+        help="compile a page spec (YAML) to an apply payload against a catalogue",
+    )
+    compile_p.add_argument("spec", help="page spec YAML")
+    compile_p.add_argument(
+        "discovery", help="formwork-discovery.json from 'gen discover'"
+    )
+    compile_p.add_argument(
+        "--out", default="formwork-payload.json", help="where to write the payload"
+    )
+    compile_p.set_defaults(func=_cmd_compile)
 
     process_p = sub.add_parser(
         "process",

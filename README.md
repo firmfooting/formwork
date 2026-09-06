@@ -46,9 +46,46 @@ source page                your laptop                 target site
 
 3. **Apply** — `formwork gen apply payload.json --name "Team home"` prints the
    second paste-in with the processed payload embedded. Run it from the
-   console on any page of the target site: it creates the page item, writes
-   the canvas with MERGE + etag concurrency control, then verifies by reading
-   back what SharePoint actually stored and comparing byte-for-byte.
+   console on any page of the target site: it creates the page (through the
+   `sitepages` API — Site Pages is a document library, so files/add of an
+   `.aspx` is refused), writes the canvas with MERGE + etag concurrency
+   control, then verifies by reading back what SharePoint actually stored and
+   comparing byte-for-byte.
+
+## Building pages from scratch: the discovery DSL
+
+Copying is half the tool. The other half is a small declarative DSL for
+creating pages from nothing.
+
+1. **Discover** — `formwork gen discover` prints a paste-in that runs against
+   any site: it enumerates every placeable component via
+   `GetClientSideWebParts` (73 on a stock team site, 285 including hidden and
+   extension components), creates a scratch page, places one control per
+   component across one/two/three-column sections, saves, reads back what
+   SharePoint persisted, recycles the scratch page, and downloads
+   `formwork-discovery.json` as the site's component catalogue.
+
+2. **Declare** — write the page you want:
+
+   ```yaml
+   page: Team demo home
+   sections:
+     - type: two-thirds
+       parts:
+         - component: NewsWebPart
+         - component: QuickLinksWebPart
+           column: 2
+     - type: one
+       parts:
+         - component: EventsWebPart
+   ```
+
+3. **Compile** — `formwork compile page.yaml formwork-discovery.json` resolves
+   every component against the live catalogue (by alias or title), emits
+   correct section geometry (`sectionFactor` 8/4 for two-thirds, 12 for one,
+   4/4/4 for three), applies property overrides, and produces an apply
+   payload. An unknown or hidden component refuses to compile — nothing is
+   placed that the site did not declare placeable.
 
 ## The canvas contract
 
