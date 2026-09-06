@@ -263,6 +263,14 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
     title = page_title(spec)
     controls: list[Control] = []
     parts_out: list[dict[str, Any]] = []
+    wants_text = any(p.kind == "text" for p in placements(spec))
+    if wants_text and not any(s.persisted is not None for s in cat.text_controls):
+        raise DslError(
+            "the spec has text parts, but this discovery document carries no persisted"
+            " text-control measurement. Run 'formwork gen discover' against the target"
+            " site first, then re-run 'formwork compile': applying an unmeasured text"
+            " shape can abort after page creation on the byte-exact check."
+        )
     for placement in placements(spec):
         where = {
             "section": placement.section,

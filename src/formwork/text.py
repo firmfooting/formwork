@@ -65,6 +65,26 @@ _REFUSED: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+#: Raw elements and constructs refused in an HTML part, matched per line,
+#: case-insensitively (HTML tag and attribute names are case-insensitive):
+#: raw-text elements (whose close would swallow the canvas wrapper's),
+#: comments (which can hide either), and inline event handlers or
+#: script-capable attributes. Content is operator-authored; the point is a
+#: stated trust boundary, not sanitisation (review P2-1, P3-3, 2026-09-06).
+_HTML_REFUSED: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"<(?:script|style|iframe|object|embed|textarea|title|svg)\b", re.I),
+     "raw script/style/embed/textarea/title/svg elements are not supported"),
+    (re.compile(r"<!--"), "HTML comments are not supported"),
+    (re.compile(r"\son[a-z]+\s*=", re.I),
+     "inline event handlers (on...) are not supported"),
+    (re.compile(r"(?:href|src)\s*=\s*[\"']?\s*(?:javascript|data|vbscript):", re.I),
+     "javascript:, data: and vbscript: urls are not supported"),
+)
+
+#: Control characters that must never reach the canvas or the preview.
+_REFUSED_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 class TextError(ValueError):
     """A text part's body cannot be converted to HTML."""
 
@@ -73,6 +93,10 @@ def text_to_html(text: str, fmt: str | None = None) -> str:
     """Convert a text part's body to the HTML the canvas will carry."""
     if fmt not in (None, "html", "markdown"):
         raise TextError(f"unknown text format {fmt!r} (use 'html' or 'markdown')")
+    if _REFUSED_CONTROLS.search(text):
+        raise TextError(
+            "text carries control characters (tab and newline are fine; nothing else is)"
+        )
     if fmt is None:
         fmt = "html" if text.lstrip().startswith("<") else "markdown"
     if fmt == "html":
@@ -90,7 +114,11 @@ def markdown_to_html(source: str) -> str:
 
 def _checked_html(source: str) -> str:
     body = source.strip()
-    if "data-sp-" in body:
+    for offset, line in enumerate(body.splitlines(), start=1):
+        for pattern, reason in _HTML_REFUSED:
+            if pattern.search(line):
+                raise TextError(f"line {offset}: {reason}")
+    if "data-sp-" in body.lower():
         raise TextError("HTML must not carry data-sp- attributes: the canvas wrapper owns them")
     if body.count("<div") != body.count("</div>"):
         raise TextError("HTML has unbalanced <div> tags: the canvas wrapper would be broken")

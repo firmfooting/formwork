@@ -12,7 +12,7 @@ import yaml
 from . import __version__
 from .bundle import parse_bundle
 from .catalogue import parse_discovery
-from .dsl import compile_page
+from .dsl import DslError, compile_page
 from .generator import (
     generate_apply_script,
     generate_discover_script,
@@ -271,7 +271,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    result: int = args.func(args)
+    # Refusals are written for people (TextError/DslError name lines and
+    # say what to do); reach the operator as one error line, not a
+    # traceback (review P3-6, 2026-09-06).
+    try:
+        result: int = args.func(args)
+    except (DslError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return result
 
 

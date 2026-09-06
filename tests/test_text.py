@@ -152,3 +152,32 @@ class TestTextToHtml:
     def test_empty_html_is_refused(self):
         with pytest.raises(TextError, match="empty"):
             text_to_html("  ", "html")
+
+
+class TestHtmlRefusals:
+    """P2-1/P3-3: the HTML path states the same trust boundary as markdown."""
+
+    @pytest.mark.parametrize("body", [
+        '<script>alert(1)</script>',
+        '<SCRIPT src="x"></SCRIPT>',
+        '<img src=x onerror="alert(1)">',
+        '<a href="javascript:alert(1)">x</a>',
+        '<a href="JaVaScRiPt:alert(1)">x</a>',
+        '<a href="data:text/html,<script>alert(1)</script>">x</a>',
+        '<style>body{}</style>',
+        '<iframe src="https://evil"></iframe>',
+        '<!-- hidden comment --><p>x</p>',
+        '<p>DAta-sp-thing</p>',
+    ])
+    def test_dangerous_html_is_refused_with_line_and_reason(self, body):
+        with pytest.raises(TextError):
+            text_to_html(body)
+
+    def test_control_characters_are_refused_before_format_detection(self):
+        with pytest.raises(TextError, match="control characters"):
+            text_to_html("ok\x005\x00 text")
+
+    def test_safe_html_still_passes(self):
+        assert text_to_html('<p>hello <strong>world</strong></p>') == (
+            '<p>hello <strong>world</strong></p>'
+        )

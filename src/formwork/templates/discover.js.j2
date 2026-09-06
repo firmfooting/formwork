@@ -166,7 +166,13 @@
   //     through the browser's own HTML parser, keep controlType 4. The raw
   //     block is kept, not a re-serialisation: the bytes are the evidence.
   const CONTROL_OPEN = '<div data-sp-canvascontrol=""';
-  const storedBlocks = stored.split(CONTROL_OPEN).slice(1).map(b => CONTROL_OPEN + b);
+  // The last block would otherwise carry everything to the end of the
+  // canvas — including the page wrapper's own "</div>", which would make
+  // persisted != requested forever (review P2-2, 2026-09-06). The canvas
+  // is exactly "<div>" + blocks + "</div>", so strip that one wrapper close.
+  const wrapperClose = "</div>";
+  const storedTail = stored.endsWith(wrapperClose) ? stored.slice(0, -wrapperClose.length) : stored;
+  const storedBlocks = storedTail.split(CONTROL_OPEN).slice(1).map(b => CONTROL_OPEN + b);
   const controlDataOf = (block) => {
     try {
       const el = new DOMParser().parseFromString(block, "text/html")
@@ -202,7 +208,8 @@
     },
     components: components,
     placements: {
-      placedCount: controls.length,
+      placedCount: controls.length + textControls.length,
+      textPlacedCount: textControls.length,
       requestedCanvasChars: canvas.length,
       storedCanvasChars: stored.length,
       storedControlCount: (stored.match(/data-sp-canvascontrol/g) || []).length,

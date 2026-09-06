@@ -189,3 +189,13 @@ class TestPreviewCommand:
         )
         assert rc == 0
         assert '<p class="title">News</p>' in out.read_text(encoding="utf-8")
+
+
+def test_preview_of_malicious_html_part_is_refused():
+    """P2-1: a <script> HTML part must refuse at compile, not execute in the preview."""
+    spec = {
+        "page": "Evil",
+        "sections": [{"type": "one", "parts": [{"text": "<script>alert(1)</script>"}]}],
+    }
+    with pytest.raises(DslError):
+        build_preview(spec, parse_discovery(DISCOVERY))

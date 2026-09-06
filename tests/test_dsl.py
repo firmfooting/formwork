@@ -167,7 +167,7 @@ class TestTextParts:
         }
 
     def test_text_part_compiles_to_a_control_type_4_control(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<p>Hello <b>there</b></p>"), cat)
         news, text = Canvas.parse(result.canvas).controls
         assert news.control_data["controlType"] == 3
@@ -180,7 +180,7 @@ class TestTextParts:
         assert text.body == '<div data-sp-rte=""><p>Hello <b>there</b></p></div></div>' + "</div>"
 
     def test_text_part_is_positioned_like_any_other_part(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<p>x</p>"), cat)
         text = Canvas.parse(result.canvas).controls[1]
         assert text.control_data["position"] == {
@@ -193,7 +193,7 @@ class TestTextParts:
         }
 
     def test_control_data_is_escaped_in_the_measured_style(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<p>x</p>"), cat)
         text = Canvas.parse(result.canvas).controls[1]
         assert text.controldata_raw.startswith("&#123;&quot;controlType&quot;&#58;4,")
@@ -202,7 +202,7 @@ class TestTextParts:
         assert '<div data-sp-rte=""><p>x</p></div>' in result.canvas
 
     def test_compiled_text_part_round_trips_through_canvas_parse_byte_exactly(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<p>A &amp; B: {c}</p>"), cat)
         parsed = Canvas.parse(result.canvas)
         assert [c.control_data["controlType"] for c in parsed.controls] == [3, 4]
@@ -213,7 +213,7 @@ class TestTextParts:
         assert parsed.render() == result.canvas
 
     def test_markdown_text_part_is_converted(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("## Hi\n\nSome **bold** and a [link](/x)."), cat)
         assert (
             '<div data-sp-rte=""><h2>Hi</h2><p>Some <strong>bold</strong> and a '
@@ -223,19 +223,19 @@ class TestTextParts:
         assert result.parts[1]["html"].startswith("<h2>Hi</h2>")
 
     def test_format_is_honoured(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("plain words", format="markdown"), cat)
         assert '<div data-sp-rte=""><p>plain words</p></div>' in result.canvas
         with pytest.raises(DslError, match="part 2: unknown text format"):
             compile_page(self.spec("x", format="rtf"), cat)
 
     def test_unsupported_markdown_refuses_with_the_part_and_line(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         with pytest.raises(DslError, match="part 2: line 1: tables"):
             compile_page(self.spec("a | b"), cat)
 
     def test_text_must_be_a_non_empty_string(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         with pytest.raises(DslError, match="part 2: 'text' must be a non-empty string"):
             compile_page(self.spec("   "), cat)
         with pytest.raises(DslError, match="part 2: 'text' must be a non-empty string"):
@@ -249,10 +249,12 @@ class TestTextParts:
             with pytest.raises(DslError, match="exactly one of 'component' or 'text'"):
                 compile_page(spec, cat)
 
-    def test_text_part_does_not_need_the_catalogue_to_know_it(self):
-        # Nothing to resolve: a text part compiles against an empty catalogue.
+    def test_text_part_does_not_need_the_catalogue_to_know_components(self):
+        # No component resolution happens for a text part: an empty component
+        # list compiles fine, as long as a persisted measurement exists (P2-3).
         spec = {"page": "T", "sections": [{"parts": [{"text": "<p>x</p>"}]}]}
-        result = compile_page(spec, Catalogue(components=()))
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
+        result = compile_page(spec, Catalogue(components=(), text_controls=cat.text_controls))
         assert result.parts == [
             {
                 "kind": "text",
@@ -266,7 +268,7 @@ class TestTextParts:
         ]
 
     def test_compiled_canvas_stays_balanced_with_text_parts(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec("<div><p>x</p></div>"), cat)
         assert result.canvas.count("<div") == result.canvas.count("</div>")
 
@@ -288,7 +290,7 @@ class TestCompilePage:
         }
 
     def test_compiles_sections_and_parts_to_canvas(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec(), cat)
         assert result.title == "Team home"
         canvas = Canvas.parse(result.canvas)
@@ -332,12 +334,12 @@ class TestCompilePage:
         assert factors == [8, 4]
 
     def test_property_overrides_reach_web_part_data(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec(), cat)
         assert "selectedListId" in result.canvas
 
     def test_web_part_ids_come_from_the_catalogue(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec(), cat)
         assert "11111111-1111-1111-1111-111111111111" in result.canvas
 
@@ -348,6 +350,21 @@ class TestCompilePage:
             compile_page(spec, cat)
 
     def test_compiled_canvas_is_balanced_html(self):
-        cat = parse_discovery(DISCOVERY)
+        cat = parse_discovery(DISCOVERY_WITH_TEXT)
         result = compile_page(self.spec(), cat)
         assert result.canvas.count("<div") == result.canvas.count("</div>")
+
+
+def test_text_parts_refuse_to_compile_without_a_persisted_measurement():
+    """P2-3: compiling text against a pre-probe discovery document is refused."""
+    cat = parse_discovery(DISCOVERY)  # fixture has no textControls key
+    spec = {"page": "X", "sections": [{"type": "one", "parts": [{"text": "# Hi"}]}]}
+    with pytest.raises(DslError, match="gen discover"):
+        compile_page(spec, cat)
+
+
+def test_malformed_text_controls_scalar_values_are_tolerated():
+    """P3-4: a truthy scalar under requested/persisted is an empty sample set."""
+    doc = dict(DISCOVERY, textControls={"requested": 1, "persisted": True})
+    cat = parse_discovery(doc)
+    assert cat.text_controls == ()

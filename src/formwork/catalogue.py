@@ -114,11 +114,17 @@ def _text_controls(raw: Any) -> tuple[TextControlSample, ...]:
     if not isinstance(raw, dict):
         return ()
     persisted_by_id: dict[str, str] = {}
-    for kept in raw.get("persisted") or []:
+    persisted_raw = raw.get("persisted")
+    if not isinstance(persisted_raw, list):
+        persisted_raw = []
+    for kept in persisted_raw:
         if isinstance(kept, dict) and isinstance(kept.get("canvas"), str):
             persisted_by_id[str(kept.get("id", ""))] = kept["canvas"]
     samples: list[TextControlSample] = []
-    for sent in raw.get("requested") or []:
+    requested_raw = raw.get("requested")
+    if not isinstance(requested_raw, list):
+        requested_raw = []
+    for sent in requested_raw:
         if not isinstance(sent, dict):
             continue
         control_id = str(sent.get("id", ""))
