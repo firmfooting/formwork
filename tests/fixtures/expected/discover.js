@@ -1,4 +1,4 @@
-// formwork discover v0.4.0 — run from any page of the site.
+// formwork discover v0.5.0 — run from any page of the site.
 // Creates two probe lists and a scratch page, places components, reads
 // back, recycles all three, and downloads formwork-discovery.json.
 (async () => {
@@ -134,7 +134,9 @@
   }
   // Pages are created through the sitepages API: Files/add refuses .aspx
   // (403), and a list-item POST into Site Pages is refused outright.
-  async function createSitePage(title) {
+  // `fields` ride in the create body beside the layout: apply sends
+  // PromotedState there, where it persisted (page.promoted-state.create-is-effective).
+  async function createSitePage(title, fields) {
     const digest = await getDigest();
     const res = await fetchWithRetry(API("sitepages/pages"), {
       method: "POST",
@@ -142,6 +144,7 @@
       body: JSON.stringify({
         __metadata: { type: "SP.Publishing.SitePage" },
         PageLayoutType: "Home",
+        ...fields,
       }),
     });
     if (!res.ok) throw await failed("page create", res);

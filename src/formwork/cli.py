@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -30,6 +31,7 @@ from .generator import (
 )
 from .multipage import compile_pages, find_specs
 from .preview import build_preview, render_preview
+from .provenance import PAYLOAD_KEY, payload_stamp, process_stamp, provenance
 from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
 
 
@@ -87,6 +89,9 @@ def _cmd_process(args: argparse.Namespace) -> int:
             {"kind": r.kind, "location": r.location, "value": r.value}
             for r in plan.unresolved
         ],
+        # Version-bound, not web-bound: a copy is bound by its mapping, so the
+        # apply guard runs its version check on this and skips the site check.
+        PAYLOAD_KEY: process_stamp(Path(args.bundle).name),
     }
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
@@ -181,15 +186,21 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
 def _cmd_compile(args: argparse.Namespace) -> int:
     registry = _registry_for(args)
-    cat = parse_discovery(_read_json(args.discovery))
+    # The stamp hashes the discovery file's exact bytes, so read them once and
+    # parse those: _read_json would decode and lose the byte identity.
+    discovery_bytes = Path(args.discovery).read_bytes()
+    discovery = json.loads(discovery_bytes)
+    cat = parse_discovery(discovery)
     spec = _read_yaml(args.spec)
     result = compile_page(spec, cat)
+    stamp = payload_stamp(provenance(discovery_bytes, discovery), Path(args.spec).name)
     payload = {
         "schema": "formwork.payload/v1",
         "sourcePage": "(compiled from spec)",
         "title": result.title,
         "canvas": result.canvas,
         "unresolved": [],
+        PAYLOAD_KEY: stamp.as_dict(),
     }
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
@@ -197,6 +208,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         f"payload written: {args.out} ({len(result.canvas)} chars of canvas, "
         f"{len(result.parts)} parts)"
     )
+    print(stamp.one_liner())
     for part in result.parts:
         emphasis = part.get("emphasis") or {}
         styled = f", zoneEmphasis {emphasis['zoneEmphasis']}" if emphasis else ""
@@ -301,14 +313,21 @@ def build_parser() -> argparse.ArgumentParser:
     gen_apply = gen_sub.add_parser(
         "apply", help="script that creates the page on the target site"
     )
-    gen_apply.add_argument("payload", help="payload.json produced by 'process'")
+    gen_apply.add_argument(
+        "payload",
+        help="payload.json from 'compile', 'compile-pages' or 'process'; its provenance"
+        " stamp is what the script checks against the web it runs on",
+    )
     gen_apply.add_argument("--name", required=True, help="title for the new page")
     gen_apply.add_argument(
         "--promoted-state",
         type=int,
         default=0,
         choices=(0, 1),
-        help="0 = site page, 1 = news post",
+        help="0 = site page (default), 1 = news post. Sent inside the sitepages/pages create"
+        " body, where PromotedState 1 persisted (FINDINGS page.promoted-state.create-is-effective,"
+        " measured 2026-09-06 beside the Article layout); the post-create item MERGE apply"
+        " used before 0.5.0 read back 0 on the Home layout (page.page-state.promoted-state)",
     )
     gen_apply.set_defaults(func=_cmd_gen_apply)
 
