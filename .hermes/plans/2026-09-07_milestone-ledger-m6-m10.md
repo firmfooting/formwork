@@ -53,7 +53,14 @@ permission inheritance for a created page. Then multi-page: a spec that is
 a list of pages sharing one discovery document, with `navigation` an
 explicit refused-until-measured key.
 
-## M8 — payload provenance and the apply guard (P2-1) — IN FLIGHT (proc_ae7e931ac501)
+## M8 — payload provenance and the apply guard (P2-1) — BUILT (PR #7) + LIVE-VALIDATED 2026-09-07
+
+Live guard validation (sandbox, TestSampleTeam, all four cases):
+1. tampered stamp URL -> REFUSED pre-create, both values listed, 0 pages created
+2. honest stamp -> guard OK, page created, canvas byte-exact (1566 chars), PromotedState 0
+3. stamp formwork 9.9.9 (newer) -> REFUSED with no override path, nothing created
+4. tampered + FORCE_SITE_MISMATCH=true -> warning printed, applied, byte-exact
+Both test pages recycled (200/200), zero residue. Guard verdict: pass on all four.
 
 Compile stamps the payload with discovery-document hash, source web id/url,
 spec hash, formwork version. Apply reads the stamp and refuses a
