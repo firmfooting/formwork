@@ -23,6 +23,15 @@ containers the script creates and recycles). They are carried here as
 :class:`PropertySample`, :class:`LayoutVariant`, :class:`ProbeList` and
 :class:`ListBinding`, paired by control id the same tolerant way. Nothing in
 the DSL reads them until a live run has been folded into a fixture.
+
+The M7 page-state lane (discover template, 2026-09-07) adds ``pageState``:
+real scratch pages created with an explicit file name, a non-default layout,
+a promoted state, a description and banner, and one checked out and
+published, each read back as a page entity and a list item, then recycled.
+They are carried here as :class:`PageStateSample` rows (requested versus
+persisted, keyed by page id) plus the ``unmeasured`` topics the lane names
+rather than guesses at; the same tolerance applies, so a document from
+before the lane parses unchanged.
 """
 
 import json
@@ -243,6 +252,49 @@ def _properties_of(web_part_data: dict[str, Any]) -> dict[str, Any] | None:
 
 
 @dataclass(frozen=True)
+class PageStateSample:
+    """One scratch page the M7 page-state probe created, as asked and as kept.
+
+    ``requested`` holds what the probe sent, by step (``create`` is the
+    sitepages/pages POST body; later steps are the item MERGE fields or the
+    page-model action bodies). ``persisted`` holds what it read back, by
+    step (``created``, ``read``, ``afterMerge``, ``afterPublish``...), each
+    read a page-entity view, a list-item view and the non-fatal permission
+    read. ``topics`` names the questions the sample answers (fileName,
+    description, bannerImageUrl, layout, promotedState, publishState,
+    permissionInheritance); one page can answer several. A sample whose
+    create was refused has ``page_id`` None, ``ok`` False and ``reason`` the
+    server's message; ``recycled`` is None when no recycle was attempted.
+    """
+
+    label: str
+    topics: tuple[str, ...]
+    page_id: int | None
+    requested: dict[str, Any]
+    persisted: dict[str, Any]
+    ok: bool
+    status: int
+    reason: str
+    recycled: bool | None
+
+    def requested_value(self, path: str) -> Any:
+        """The value at a dotted path into ``requested``; None when absent."""
+        return _walk(self.requested, path)
+
+    def persisted_value(self, path: str) -> Any:
+        """The value at a dotted path into ``persisted``; None when absent."""
+        return _walk(self.persisted, path)
+
+
+def _walk(node: Any, path: str) -> Any:
+    for key in path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+@dataclass(frozen=True)
 class Catalogue:
     components: tuple[Component, ...]
     text_controls: tuple[TextControlSample, ...] = ()
@@ -250,6 +302,8 @@ class Catalogue:
     layout_variants: tuple[LayoutVariant, ...] = ()
     probe_lists: tuple[ProbeList, ...] = ()
     list_bindings: tuple[ListBinding, ...] = ()
+    page_state: tuple[PageStateSample, ...] = ()
+    page_state_unmeasured: tuple[str, ...] = ()
     web_url: str = ""
 
     @property
@@ -281,6 +335,15 @@ class Catalogue:
             if probe.key == key:
                 return probe
         return None
+
+    def page_state_sample(self, label: str) -> PageStateSample | None:
+        for sample in self.page_state:
+            if sample.label == label:
+                return sample
+        return None
+
+    def page_state_for(self, topic: str) -> tuple[PageStateSample, ...]:
+        return tuple(s for s in self.page_state if topic in s.topics)
 
     def by_alias(self, alias: str) -> Component:
         for c in self.components:
@@ -333,6 +396,7 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
             )
         )
     bindings = discovery.get("listBindings")
+    page_state = discovery.get("pageState")
     web = discovery.get("web") or {}
     return Catalogue(
         components=tuple(components),
@@ -341,6 +405,8 @@ def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
         layout_variants=_layout_variants(discovery.get("layoutVariants")),
         probe_lists=_probe_lists(bindings),
         list_bindings=_list_bindings(bindings),
+        page_state=_page_state(page_state),
+        page_state_unmeasured=_page_state_unmeasured(page_state),
         web_url=web.get("url", "") if isinstance(web, dict) else "",
     )
 
@@ -370,6 +436,16 @@ def _optional_str(value: Any) -> str | None:
 
 def _int_or(value: Any, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
@@ -508,3 +584,38 @@ def _list_bindings(raw: Any) -> tuple[ListBinding, ...]:
             )
         )
     return tuple(bindings)
+
+
+def _page_state(raw: Any) -> tuple[PageStateSample, ...]:
+    """The M7 page-state samples, one per scratch page the probe tried to create.
+
+    A row without a string label is not a sample; everything else is carried
+    with the same defaults the template writes before a step runs.
+    """
+    samples: list[PageStateSample] = []
+    for row in _rows(raw, "samples"):
+        label = _optional_str(row.get("label"))
+        if label is None:
+            continue
+        recycled = row.get("recycled")
+        samples.append(
+            PageStateSample(
+                label=label,
+                topics=_str_tuple(row.get("topics")),
+                page_id=_optional_int(row.get("pageId")),
+                requested=_dict_or_empty(row.get("requested")),
+                persisted=_dict_or_empty(row.get("persisted")),
+                ok=row.get("ok") is True,
+                status=_int_or(row.get("status"), 0),
+                reason=str(row.get("reason") or ""),
+                recycled=recycled if isinstance(recycled, bool) else None,
+            )
+        )
+    return tuple(samples)
+
+
+def _page_state_unmeasured(raw: Any) -> tuple[str, ...]:
+    """The topics the page-state lane names as unmeasured, in file order."""
+    return tuple(
+        row["topic"] for row in _rows(raw, "unmeasured") if isinstance(row.get("topic"), str)
+    )

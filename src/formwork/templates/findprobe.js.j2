@@ -184,6 +184,8 @@
     }
   }
 
+{% include "_probe_pagestate.js.j2" %}
+
   // 6. Verdicts: one string per findprobe-lane check-id, in the words the
   //    registry's result column uses, so a re-run's judgement is a string
   //    comparison. "byte-exact" is the stored block equal to the requested
@@ -244,6 +246,78 @@
     (bindingSkipped.length ? "; skipped " + labels(bindingSkipped) : "");
   verdicts["page.emphasis.section-savepage"] = sectionEmphasis.summary;
 
+  // Page-state verdicts (M7): one per FINDINGS.md row, computed from the
+  // measured FIELDS the claims rest on — never from create success or
+  // server-assigned ids (review 2026-09-07 P1-2: "ok (page 16)" diffs on
+  // every run and reverses of the claim still read "same").
+  const psByLabel = {};
+  for (const s of pageStateSamples) psByLabel[s.label] = s;
+  const psField = (label, path, fallback) => {
+    // Dotted path through a sample's persisted steps; a missing path or
+    // sample yields the fallback so the verdict stays a stable string.
+    let node = psByLabel[label];
+    node = node && node.persisted ? node.persisted : null;
+    for (const part of path.split(".")) {
+      if (node && hasOwn(node, part)) node = node[part];
+      else return fallback;
+    }
+    // A null at the end of the path is a MEASURED null, not a missing path
+    // (review 2026-09-07 P2-4: Description reads null — that is the answer).
+    return node === undefined ? fallback : String(node);
+  };
+  // filename-slug: did the server keep the requested FileName? Compare the
+  // requested name with the stored one — run-independent by construction.
+  const fileNameKept = label => {
+    const s = psByLabel[label];
+    if (!s) return "no sample";
+    const wanted = s.requested && s.requested.create
+      ? s.requested.create.FileName : null;
+    const got = psField(label, "created.fields.FileName", null)
+      || psField(label, "read.page.fields.FileName", null);
+    return wanted && got ? (got === wanted ? "kept" : "ignored (stored " + got + ")")
+      : "no read";
+  };
+  verdicts["page.page-state.filename-slug"] =
+    "explicit: " + fileNameKept("filename-explicit") +
+    "; slug-needing: " + fileNameKept("filename-normalised");
+  // description-banner: the AFTER-MERGE reads, folded to stable words —
+  // a banner URL in a cell would be tenant-specific.
+  const bannerKept = (() => {
+    const s = psByLabel["filename-explicit"];
+    if (!s) return "no sample";
+    const wanted = s.requested && s.requested.merge && s.requested.merge.BannerImageUrl
+      ? s.requested.merge.BannerImageUrl.Url : null;
+    const got = psField("filename-explicit", "afterMerge.page.fields.BannerImageUrl", null);
+    return wanted && got ? (got === wanted ? "persisted" : "changed") : "not persisted";
+  })();
+  verdicts["page.page-state.description-banner"] =
+    "description " + psField("filename-explicit", "afterMerge.page.fields.Description", "missing") +
+    "; banner " + bannerKept;
+  // layout-article: the stored layout type, not the create's exit code.
+  verdicts["page.page-state.layout-article"] =
+    "PageLayoutType " + psField("layout-article", "read.page.fields.PageLayoutType", "missing");
+  // promoted-state: the two measured values, causal claim left to the row.
+  verdicts["page.page-state.promoted-state"] =
+    "at create " + psField("promoted-at-create", "read.page.fields.PromotedState", "missing") +
+    "; after merge " + psField("promoted-merge-flip", "afterMerge.page.fields.PromotedState", "missing") +
+    " (merge status " + (() => { const s = psByLabel["promoted-merge-flip"];
+      return s && s.persisted && s.persisted.merge ? s.persisted.merge.status : "?"; })() + ")";
+  // publish-flow: the flow's end state in fixed wording, from the steps.
+  const publishFlow = (() => {
+    const s = psByLabel["publish-state"];
+    if (!s) return "no sample";
+    const freshV = psField("publish-state", "fresh.page.fields.Version", "?");
+    const pub = s.persisted && s.persisted.publish ? s.persisted.publish.status : "?";
+    const afterV = psField("publish-state", "afterPublish.page.fields.Version", "?");
+    const stillOut = psField("publish-state", "afterPublish.page.fields.IsPageCheckedOutToCurrentUser", "?");
+    return "fresh " + freshV + " checked out; checkoutpage " +
+      (s.persisted && s.persisted.checkout ? s.persisted.checkout.status : "?") +
+      "; publish " + pub + " -> " + afterV + ", checked out " + stillOut;
+  })();
+  verdicts["page.page-state.publish-flow"] = publishFlow;
+  verdicts["page.page-state.permission-inheritance"] =
+    psField("filename-normalised", "read.permissions.hasUniqueRoleAssignments", "missing");
+
   // 7. Diff against the registry and download. "same" means the row still
   //    holds; "DIFFERS" is the operator's cue to re-measure, fold the new
   //    capture into the fixtures and add a dated row. A verdict no row
@@ -293,6 +367,15 @@
       layoutVariants: { requested: layoutRequested, persisted: layoutPersisted },
       listBindings: { fixtures: probeLists, requested: bindingRequested,
         persisted: bindingPersisted, skipped: bindingSkipped },
+      // The M7 page-state lane (5d), under discover's key and in its shape,
+      // listed rather than judged: its rows are discover-lane rows.
+      pageState: {
+        measuredAt: new Date().toISOString().slice(0, 10),
+        scratchPrefix: PAGE_STATE,
+        pageKeys: pageStateKeys,
+        samples: pageStateSamples,
+        unmeasured: pageStateUnmeasured,
+      },
       storedCanvas: stored,
     },
     placements: {
@@ -303,6 +386,8 @@
       storedControlCount: storedBlocks.length,
       savePageScratchId: sectionEmphasis.pageId,
       savePageRecycled: sectionEmphasis.recycled,
+      pageStateScratchIds: pageStateSamples.map(s => s.pageId),
+      pageStateRecycled: pageStateSamples.map(s => s.recycled),
     },
   };
   const blob = new Blob([JSON.stringify(findprobe, null, 2)],
@@ -320,5 +405,7 @@
     "scratch recycled:", recycleRes.ok, "|",
     "SavePage scratch recycled:", sectionEmphasis.recycled, "|",
     "probe lists recycled:", probeLists.map(p => p.key + " " + (p.recycled === null
-      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "));
+      ? "n/a" : p.recycled ? "ok" : "FAILED " + p.recycleStatus + " " + p.recycleReason)).join(", "), "|",
+    "page-state samples ok", pageStateSamples.filter(s => s.ok).length, "of", pageStateSamples.length, "|",
+    "page-state pages recycled:", pageStateRecycled);
 })().catch(err => { console.error("[formwork] findprobe failed:", err); });

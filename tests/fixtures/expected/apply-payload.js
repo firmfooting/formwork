@@ -1,4 +1,4 @@
-// formwork apply v0.3.0 — run from any page of the TARGET site.
+// formwork apply v0.4.0 — run from any page of the TARGET site.
 // Creates the page, writes the embedded canvas via REST, verifies.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";

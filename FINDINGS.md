@@ -8,7 +8,7 @@ prose.
 - **check-id** is `<surface>.<scope>.<question>`: lowercase hyphenated
   segments, the surface `page` today.
 - **claim** is the sentence the code relies on.
-- **measured** is the ISO date of the live run that produced the evidence.
+- **measured** is the UTC date of the live run that produced the evidence (the script stamps `toISOString`, so an AEST morning run is dated the previous day).
 - **result** is the compact outcome the re-probe reproduces word for word.
   `formwork gen findprobe` prints "same" or "DIFFERS" per row by comparing
   its verdict string to this cell.
@@ -50,3 +50,9 @@ table is the last thing in this file and is byte-identical to what
 | page.layout.factors-8-4 | An 8/4 section stores its column-1 control with sectionFactor 8 as written | 2026-09-06 | 1/1 byte-exact | tests/fixtures/discovery.m5.json#layoutVariants | formwork gen findprobe |
 | page.layout.factors-4-8 | 4/8 sections store their controls as written, a column-2 control written before its column-1 neighbour included: SharePoint keeps the written order rather than re-sorting by column | 2026-09-06 | 3/3 byte-exact; written order kept | tests/fixtures/discovery.m5.json#layoutVariants | formwork gen findprobe |
 | page.bind.list-library-keys | The library and list entries of ListWebPart and a Quick links item, bound to a custom list and a document library through selectedListId, selectedListUrl, webRelativeListUrl, selectedViewId and serverProcessedContent, store byte for byte | 2026-09-06 | 6/6 byte-exact | tests/fixtures/discovery.m5.json#listBindings | formwork gen findprobe |
+| page.page-state.filename-slug | On the Home layout apply creates with, a FileName sent at create through sitepages/pages is ignored and the server assigns the name itself (an eight-character slug); whether Article honours FileName is unmeasured | 2026-09-06 | explicit: ignored (stored d0i8msje.aspx); slug-needing: ignored (stored b1xk6f0f.aspx) | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |
+| page.page-state.description-banner | BannerImageUrl sent by item MERGE (SP.FieldUrlValue) is persisted on the page entity after the merge; Description sent by the same MERGE returns 204 and stays null on entity and item | 2026-09-06 | description null; banner persisted | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |
+| page.page-state.layout-article | A page created with PageLayoutType Article persists the layout type | 2026-09-06 | PageLayoutType Article | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |
+| page.page-state.promoted-state | PromotedState 1 sent at create (beside the Article layout) persists as 1; the same MERGE on a fresh Home-layout draft returns 204 and reads back 0 — the create-then-MERGE path apply uses leaves the page at 0, whether that is the write path or the Home layout is not separated by this lane | 2026-09-06 | at create 1; after merge 0 (merge status 204) | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |
+| page.page-state.publish-flow | A fresh draft is version 0.1 checked out to its creator; checkoutpage on the already-checked-out page is a 200 with no field change; publish returns 200 and moves the version to 1.0 with the checkout cleared | 2026-09-06 | fresh 0.1 checked out; checkoutpage 200; publish 200 -> 1.0, checked out false | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |
+| page.page-state.permission-inheritance | A page created by sitepages/pages does not break role inheritance: HasUniqueRoleAssignments reads false on the fresh item | 2026-09-06 | false | tests/fixtures/discovery.pagestate.json#pageState | formwork gen findprobe |

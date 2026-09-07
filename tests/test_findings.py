@@ -45,6 +45,12 @@ TEMPLATES = ROOT / "src" / "formwork" / "templates"
 
 #: The date of the two live runs every seeded row was derived from.
 MEASURED = dt.date(2026, 9, 6)
+#: The page-state lane was measured later (its own live run).
+MEASURED_M7 = dt.date(2026, 9, 7)
+#: The result cell of a row whose live run has not happened yet. A pending
+#: row is exempt from the evidence and dating pins above until the run
+#: lands and the cell is rewritten to the server's answer.
+PENDING_RESULT = "PENDING LIVE RUN"
 
 #: The seeded rows, in registry order. Two are re-derived by the catalogue
 #: run (`formwork gen discover`), the rest by the findprobe lane.
@@ -68,6 +74,12 @@ FINDPROBE_LANE = [
     "page.layout.factors-8-4",
     "page.layout.factors-4-8",
     "page.bind.list-library-keys",
+    "page.page-state.filename-slug",
+    "page.page-state.description-banner",
+    "page.page-state.layout-article",
+    "page.page-state.promoted-state",
+    "page.page-state.publish-flow",
+    "page.page-state.permission-inheritance",
 ]
 
 GUID = "12345678-1234-1234-1234-123456789abc"
@@ -109,7 +121,7 @@ class TestTheRepoRegistry:
     def test_seeds_every_measured_claim_in_lane_order(self):
         registry = load_findings(FINDINGS)
         assert [f.check_id for f in registry] == DISCOVER_LANE + FINDPROBE_LANE
-        assert {f.measured for f in registry} == {MEASURED}
+        assert {f.measured for f in registry} <= {MEASURED, MEASURED_M7}
         assert [f.check_id for f in registry.lane("discover")] == DISCOVER_LANE
         assert [f.check_id for f in registry.lane("findprobe")] == FINDPROBE_LANE
         assert registry.check_ids == tuple(DISCOVER_LANE + FINDPROBE_LANE)
@@ -124,6 +136,10 @@ class TestTheRepoRegistry:
 
     def test_every_evidence_pointer_resolves_to_a_fixture_key(self):
         for finding in load_findings(FINDINGS):
+            if finding.result == PENDING_RESULT:
+                # A pending row's evidence block lands with the live run;
+                # the pin tightens when the result cell is rewritten.
+                continue
             path, _, dotted = finding.evidence.partition("#")
             assert path.startswith("tests/fixtures/"), finding.check_id
             assert dotted, finding.check_id
@@ -132,6 +148,8 @@ class TestTheRepoRegistry:
 
     def test_every_row_is_dated_by_the_run_that_produced_it(self):
         for finding in load_findings(FINDINGS):
+            if finding.result == PENDING_RESULT:
+                continue
             path, _, dotted = finding.evidence.partition("#")
             document = json.loads((ROOT / path).read_text(encoding="utf-8"))
             node = walk(document, dotted)
@@ -528,9 +546,12 @@ class TestFindprobe:
         # its registry literal and its SavePage leg. Same bytes in both.
         setup = (TEMPLATES / "_probe_setup.js.j2").read_text(encoding="utf-8")
         legs = (TEMPLATES / "_probe_legs.js.j2").read_text(encoding="utf-8")
+        # M7 (2026-09-07): the page-state lane is a third shared partial,
+        # after the legs in discover and after the SavePage leg in findprobe.
+        pagestate = (TEMPLATES / "_probe_pagestate.js.j2").read_text(encoding="utf-8")
         discover = generate_discover_script()
         findprobe = generate_findprobe_script(load_findings(FINDINGS))
-        for partial in (setup, legs):
+        for partial in (setup, legs, pagestate):
             # One Jinja comment names the partial; everything after it is
             # plain JavaScript that both scripts carry byte for byte.
             header, body = partial.split("\n", 1)
@@ -599,3 +620,115 @@ class TestFindprobe:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.startswith("error: no findings registry at ")
+
+
+class TestPageStateVerdictDerivation:
+    """Re-review 2026-09-07 P1-1/P1-2: the page-state verdicts must be
+    derivable from the fixture by the template's own logic, and the result
+    cells must equal that derivation exactly. This test re-implements the
+    template's verdict computation in Python and diffs against FINDINGS.md;
+    it pins that the cells are RUN-INDEPENDENT (no page ids, no tenant URLs)
+    and that the publish leg reads the flow steps the sample actually
+    carries."""
+
+    def test_result_cells_equal_the_template_derivation(self):
+        document = json.loads(
+            (ROOT / "tests" / "fixtures" / "discovery.pagestate.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        samples = {s["label"]: s for s in document["pageState"]["samples"]}
+
+        def ps_field(label, path, fallback="missing"):
+            node = samples.get(label)
+            node = node.get("persisted", {}) if node else None
+            for part in path.split("."):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    return fallback
+            if node is None:
+                return "null"
+            return str(node).lower() if isinstance(node, bool) else str(node)
+
+        def file_kept(label):
+            s = samples.get(label)
+            if not s:
+                return "no sample"
+            wanted = s.get("requested", {}).get("create", {}).get("FileName")
+            got = ps_field(label, "created.fields.FileName", None) or ps_field(
+                label, "read.page.fields.FileName", None
+            )
+            if wanted and got:
+                return "kept" if got == wanted else f"ignored (stored {got})"
+            return "no read"
+
+        wanted_banner = samples["filename-explicit"]["requested"]["merge"][
+            "BannerImageUrl"
+        ]["Url"]
+        got_banner = ps_field(
+            "filename-explicit", "afterMerge.page.fields.BannerImageUrl", None
+        )
+        banner = (
+            "persisted" if got_banner == wanted_banner else "changed"
+        ) if got_banner else "not persisted"
+
+        flow = samples["publish-state"]["persisted"]
+        publish_verdict = (
+            f"fresh {ps_field('publish-state', 'fresh.page.fields.Version', '?')} checked out; "
+            f"checkoutpage {flow['checkout']['status']};"
+            f" publish {flow['publish']['status']} ->"
+            f" {ps_field('publish-state', 'afterPublish.page.fields.Version', '?')},"
+            f" checked out {ps_after_checkout(samples)}"
+        )
+
+        expected = {
+            "page.page-state.filename-slug": (
+                f"explicit: {file_kept('filename-explicit')}; "
+                f"slug-needing: {file_kept('filename-normalised')}"
+            ),
+            "page.page-state.description-banner": (
+                "description "
+                + ps_field("filename-explicit", "afterMerge.page.fields.Description")
+                + "; banner "
+                + banner
+            ),
+            "page.page-state.layout-article": (
+                "PageLayoutType "
+                + ps_field("layout-article", "read.page.fields.PageLayoutType")
+            ),
+            "page.page-state.promoted-state": (
+                f"at create {ps_field('promoted-at-create', 'read.page.fields.PromotedState')}; "
+                f"after merge"
+                f" {ps_field('promoted-merge-flip', 'afterMerge.page.fields.PromotedState')}"
+                f" (merge status {flow_merge_status(samples)})"
+            ),
+            "page.page-state.publish-flow": publish_verdict,
+            "page.page-state.permission-inheritance": ps_field(
+                "filename-normalised", "read.permissions.hasUniqueRoleAssignments"
+            ),
+        }
+        registry = load_findings(FINDINGS)
+        for check_id, cell in expected.items():
+            finding = registry.newest(check_id)
+            assert finding is not None, check_id
+            assert finding.result == cell, (check_id, finding.result, cell)
+        # Run-independence (review 2026-09-07 P1-2): no "ok (page N)" id
+        # references and no tenant URLs in any cell.
+        for check_id in expected:
+            finding = registry.newest(check_id)
+            assert not re.search(r"\(page \d+\)", finding.result), check_id
+            assert "https://" not in finding.result, check_id
+
+
+def flow_merge_status(samples):
+    return samples["promoted-merge-flip"]["persisted"]["merge"]["status"]
+
+
+def ps_after_checkout(samples):
+    """The afterPublish checkout flag, read the way the template leg reads it."""
+    node = samples["publish-state"]["persisted"]["afterPublish"]["page"]["fields"]
+    value = node["IsPageCheckedOutToCurrentUser"]
+    if value is None:
+        return "null"
+    return str(value).lower() if isinstance(value, bool) else str(value)
