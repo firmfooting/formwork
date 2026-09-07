@@ -53,7 +53,7 @@ permission inheritance for a created page. Then multi-page: a spec that is
 a list of pages sharing one discovery document, with `navigation` an
 explicit refused-until-measured key.
 
-## M8 — payload provenance and the apply guard (P2-1)
+## M8 — payload provenance and the apply guard (P2-1) — IN FLIGHT (proc_ae7e931ac501)
 
 Compile stamps the payload with discovery-document hash, source web id/url,
 spec hash, formwork version. Apply reads the stamp and refuses a
