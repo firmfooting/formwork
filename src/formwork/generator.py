@@ -51,11 +51,24 @@ def generate_apply_script(
 ) -> str:
     """Console script: create the page on the target site and set its canvas.
 
-    ``canvas_payload`` is the processed JSON document produced by
-    ``formwork process``; it is embedded as a JSON string literal and parsed
-    at runtime. The JSON embedding happens HERE, so the template receives
-    ready JavaScript literals and never quotes anything itself.
+    ``canvas_payload`` is the JSON document ``formwork compile``,
+    ``compile-pages`` or ``process`` wrote; it is embedded as a JSON string
+    literal and parsed at runtime. The JSON embedding happens HERE, so the
+    template receives ready JavaScript literals and never quotes anything
+    itself. The script reads the payload's ``provenance`` stamp before it
+    creates anything and refuses on a web or version mismatch
+    (:mod:`formwork.provenance`).
+
+    ``promoted_state`` is sent inside the create body: 1 at create persisted
+    (page.promoted-state.create-is-effective, 2026-09-06), and 0 sends
+    nothing. No other value is measured, so no other value is accepted.
     """
+    if promoted_state not in (0, 1):
+        raise ValueError(
+            f"promoted_state must be 0 or 1, not {promoted_state!r}: PromotedState 1 in the"
+            " create body is the measured value (page.promoted-state.create-is-effective,"
+            " 2026-09-06) and 0 sends nothing; no other value is measured"
+        )
     return render_template(
         "apply.js.j2",
         version=__version__,

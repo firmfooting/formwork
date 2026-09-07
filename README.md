@@ -76,6 +76,22 @@ target site                     your laptop                          target site
    the stored spelling (`:` as `&#58;`, see "Text parts"), so that rewrite
    does not trip the check.
 
+   **Provenance guard.** The payload carries a `provenance` stamp written by
+   `compile`: the formwork version, the SHA-256 of the discovery file's
+   bytes, the discovery's web id, web URL and timestamp, the spec name and
+   the compile time (`compile` prints it on the line after "payload
+   written"). Before it creates anything, the apply script reads the web it
+   runs on and refuses, listing the stamp's value beside the observed one,
+   when the web id or URL differs, when the payload's formwork is newer than
+   the script's own version, or when there is no stamp at all (a payload from
+   before 0.5.0). To apply a payload on a different web on purpose, set
+   `FORCE_SITE_MISMATCH = true` at the top of the script; nothing overrides
+   the version check. `--promoted-state 1` sends `PromotedState` inside the
+   create body, where it was measured persisting (beside the Article layout,
+   `page.promoted-state.create-is-effective`); the post-create MERGE the
+   script used before 0.5.0 read back 0 on the Home layout. The script prints
+   the stored value beside the byte-exact result and warns if it differs.
+
 ## Writing the spec
 
 ```yaml
@@ -241,7 +257,10 @@ records every result. The header, `compiledWith`, names the formwork version,
 the SHA-256 of the discovery bytes, the web id and URL and the discovery's
 own timestamp once for the run; each page entry carries the spec, the title,
 the payload name, the part count and any staleness warnings from
-`FINDINGS.md` (the same ones `compile` prints, per page on stderr).
+`FINDINGS.md` (the same ones `compile` prints, per page on stderr). Each
+payload also carries that header plus its own spec name and the run's compile
+time as `provenance`: the stamp the apply script checks (see step 5 of the
+authoring workflow).
 
 What multi-page deliberately does not do:
 
@@ -287,7 +306,10 @@ The second workflow moves an existing page between sites.
    broken page.
 
 4. **Apply** — `formwork gen apply payload.json --name "Team home"`, as in
-   the authoring workflow.
+   the authoring workflow. A process payload's stamp names the formwork
+   version and the bundle but no discovery web (a copy is bound by its
+   mapping), so the apply script runs its version check and prints that the
+   site check does not apply.
 
 Mapping file shape:
 

@@ -1,4 +1,4 @@
-// formwork extract v0.4.0 — run from the source page itself.
+// formwork extract v0.5.0 — run from the source page itself.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
   const VERBOSE = "application/json;odata=verbose";
@@ -132,7 +132,9 @@
   }
   // Pages are created through the sitepages API: Files/add refuses .aspx
   // (403), and a list-item POST into Site Pages is refused outright.
-  async function createSitePage(title) {
+  // `fields` ride in the create body beside the layout: apply sends
+  // PromotedState there, where it persisted (page.promoted-state.create-is-effective).
+  async function createSitePage(title, fields) {
     const digest = await getDigest();
     const res = await fetchWithRetry(API("sitepages/pages"), {
       method: "POST",
@@ -140,6 +142,7 @@
       body: JSON.stringify({
         __metadata: { type: "SP.Publishing.SitePage" },
         PageLayoutType: "Home",
+        ...fields,
       }),
     });
     if (!res.ok) throw await failed("page create", res);
@@ -215,7 +218,7 @@
       webId: web.d.Id,
       siteId: site.d.Id,
     },
-    meta: { webTitle: web.d.Title, formworkVersion: "0.4.0" },
+    meta: { webTitle: web.d.Title, formworkVersion: "0.5.0" },
     page: page,
     sections: [],
   };

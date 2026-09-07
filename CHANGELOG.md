@@ -5,6 +5,52 @@ here was measured on the shauntestazure sandbox on the date given; the
 evidence lives under `tests/fixtures/`. No tags have been cut; releases are
 the version literal in `pyproject.toml` and `src/formwork/__init__.py`.
 
+## 0.5.0 — 2026-09-07
+
+Payload provenance and the apply guard (M8), on top of 0.4.0's page-state
+lane (M7): a payload now says which web it was compiled for, the apply
+paste-in refuses to put it anywhere else, and the promoted state travels
+where it was measured to persist.
+
+### Provenance and the apply guard (M8)
+
+- **Every payload carries a `provenance` stamp.** `formwork compile` and
+  `compile-pages` write the formwork version, the SHA-256 of the discovery
+  file's exact bytes, the discovery's web id, web URL and `discoveredAt`, the
+  spec file name and an ISO compile time (`src/formwork/provenance.py`;
+  `multipage.Provenance` moved there unchanged, and the manifest header
+  `compiledWith` is the same five fields). `compile` prints the stamp on the
+  line after "payload written". `formwork process` writes a shorter stamp
+  (version, bundle name, `processedAt`): a copied page is bound to its
+  mapping, not to a discovery document.
+- **The apply paste-in refuses before it creates anything** (architecture
+  review 2026-09-06, P2-1) when the payload has no stamp, when the web it
+  runs on differs from the stamp's web id or URL (read the way discover
+  records them: `web.d.Id`, and `location.origin` plus the server-relative
+  root), or when the payload's formwork is newer than the script's own
+  version. Each refusal lists the stamp's value beside the observed one.
+  `FORCE_SITE_MISMATCH`, a constant at the top of the script documented in
+  its header, overrides the site check only; the version check has no
+  override. A process stamp gets the version check and a printed line that
+  the site check does not apply.
+- **`PromotedState` rides in the create body.** `--promoted-state 1` used to
+  be a post-create item MERGE, which the page-state lane measured returning
+  204 and reading back 0 on the Home layout (`page.page-state.promoted-state`;
+  review 2026-09-07 P1-3 named the confound: write path or layout). Sent at
+  create it persisted (new row `page.promoted-state.create-is-effective`,
+  measured 2026-09-06 beside the Article layout,
+  `discovery.pagestate.json#pageState.samples.3`). Apply now sends it inside
+  the create body, sends nothing for 0, reads the stored value back beside the
+  byte-exact check and warns, without throwing, when it differs. The Home
+  layout with `PromotedState` at create is not yet a sample of its own.
+  `createSitePage` in the shared prelude takes the extra create fields;
+  `gen apply --promoted-state` still accepts only 0 or 1 and the generator
+  refuses any other value.
+- `FINDINGS.md`: the new row, with a findprobe verdict that names the layout
+  it was measured beside; the promoted-state row cites the review that named
+  its confound. Goldens regenerated for the prelude change, the apply body and
+  the version; version 0.5.0.
+
 ## 0.4.0 — 2026-09-07
 
 The findings registry (M6, PR #5) and page state and identity (M7).

@@ -80,6 +80,7 @@ FINDPROBE_LANE = [
     "page.page-state.promoted-state",
     "page.page-state.publish-flow",
     "page.page-state.permission-inheritance",
+    "page.promoted-state.create-is-effective",
 ]
 
 GUID = "12345678-1234-1234-1234-123456789abc"
@@ -111,6 +112,11 @@ def registry_dated(day: dt.date) -> Registry:
 def walk(document: object, dotted: str) -> object:
     node = document
     for key in dotted.split("."):
+        if isinstance(node, list):
+            # A list is indexed by a digit segment (pageState.samples.3).
+            assert key.isdigit() and int(key) < len(node), f"{dotted}: no index {key!r}"
+            node = node[int(key)]
+            continue
         assert isinstance(node, dict), f"{dotted}: {key} is not under a mapping"
         assert key in node, f"{dotted}: no key {key!r}"
         node = node[key]
@@ -486,7 +492,11 @@ class TestCompileCommand:
         payload = json.loads(pathlib.Path(out).read_text(encoding="utf-8"))
         assert payload["canvas"] == expected.canvas
         lines = captured.out.splitlines()
-        assert lines[1:] == [
+        # M8: lines[1] is the provenance stamp (after "payload written:");
+        # the part lines follow it unchanged (the "DSL unchanged" claim is
+        # about parts, not silence).
+        assert lines[1].startswith("provenance: formwork ")
+        assert lines[2:] == [
             "  section 1, column 1: NewsWebPart (News, zoneEmphasis 2)",
             "  section 2, column 1: NewsWebPart (News)",
         ]
@@ -706,6 +716,11 @@ class TestPageStateVerdictDerivation:
             "page.page-state.publish-flow": publish_verdict,
             "page.page-state.permission-inheritance": ps_field(
                 "filename-normalised", "read.permissions.hasUniqueRoleAssignments"
+            ),
+            "page.promoted-state.create-is-effective": (
+                f"PromotedState {ps_field('promoted-at-create', 'read.page.fields.PromotedState')}"
+                f" at create beside"
+                f" {ps_field('promoted-at-create', 'read.page.fields.PageLayoutType')}"
             ),
         }
         registry = load_findings(FINDINGS)

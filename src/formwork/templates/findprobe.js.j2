@@ -302,6 +302,11 @@
     "; after merge " + psField("promoted-merge-flip", "afterMerge.page.fields.PromotedState", "missing") +
     " (merge status " + (() => { const s = psByLabel["promoted-merge-flip"];
       return s && s.persisted && s.persisted.merge ? s.persisted.merge.status : "?"; })() + ")";
+  // create-is-effective (M8): the value AND the layout it was measured
+  // beside, so the row cannot be read as a Home-layout result.
+  verdicts["page.promoted-state.create-is-effective"] =
+    "PromotedState " + psField("promoted-at-create", "read.page.fields.PromotedState", "missing") +
+    " at create beside " + psField("promoted-at-create", "read.page.fields.PageLayoutType", "missing");
   // publish-flow: the flow's end state in fixed wording, from the steps.
   const publishFlow = (() => {
     const s = psByLabel["publish-state"];

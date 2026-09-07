@@ -46,8 +46,25 @@ FINDINGS = pathlib.Path(__file__).parent.parent / "FINDINGS.md"
 #: embeds only "{}", so this second golden is the one that pins the
 #: embedding (review P3-2 / P3-4, 2026-09-06).
 APPLY_PAYLOAD_NAME = "Bob's <page>"
+#: The stamp compile writes (M8), with the pagestate fixture's own identity:
+#: its web id and URL as discover recorded them, the sha256 of its bytes on
+#: 2026-09-07, its discoveredAt. The golden so shows a real stamp shape, and
+#: tests/test_apply_guard.py runs the golden against that web.
+APPLY_PAYLOAD_STAMP = {
+    "formwork": "0.5.0",
+    "discoverySha256": "931ef951f66f5f610dcd6ce06bb3eea0a57770fd30c5dbe89df8d80b4cb94e1d",
+    "discoveryWebId": "20c3b672-36ff-4738-9518-192017e92eea",
+    "discoveryWebUrl": "https://shauntestazure.sharepoint.com/sites/TestSampleTeam",
+    "discoveredAt": "2026-09-06T22:15:54.234Z",
+    "spec": "home.yaml",
+    "compiledAt": "2026-09-07T00:00:00Z",
+}
 APPLY_PAYLOAD = json.dumps(
-    {"title": APPLY_PAYLOAD_NAME, "canvas": '<div>{"k": 1} \\ </script> ü</div>'}
+    {
+        "title": APPLY_PAYLOAD_NAME,
+        "canvas": '<div>{"k": 1} \\ </script> ü</div>',
+        "provenance": APPLY_PAYLOAD_STAMP,
+    }
 )
 
 #: Every generated script, by the name of its golden file.

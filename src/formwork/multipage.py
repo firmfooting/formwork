@@ -14,8 +14,9 @@ document. The choices, each pinned by tests/test_multipage.py:
   records the formwork version, the discovery document's sha256, its web id,
   web URL and ``discoveredAt`` once for the run, then one row per spec: ok or
   the error, the payload name, the part count and the staleness warnings.
-  The payloads stay byte-compatible with ``compile``; stamping the header into
-  each payload is an apply-side (M8) decision, not made here.
+  Each payload carries the same header plus its spec name and the run's
+  compile time under ``provenance`` (M8, :mod:`formwork.provenance`): the
+  stamp the apply paste-in checks before it creates anything.
 * **Per-page isolation.** A spec that fails (unreadable YAML, a DSL refusal,
   an unknown component) fails alone: its row records the error, no payload is
   written for it, and every other spec still builds. The command exits 1 when
@@ -34,7 +35,6 @@ document. The choices, each pinned by tests/test_multipage.py:
 from __future__ import annotations
 
 import glob
-import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -43,10 +43,10 @@ from typing import Any
 
 import yaml
 
-from . import __version__
 from .catalogue import Catalogue, parse_discovery
 from .dsl import DslError, compile_page
 from .findings import DEFAULT_MAX_AGE_DAYS, Registry, stale_findings
+from .provenance import PAYLOAD_KEY, Provenance, now_iso, payload_stamp, provenance
 
 #: The manifest's schema tag; the payloads keep ``compile``'s.
 MANIFEST_SCHEMA = "formwork.pages/v1"
@@ -54,39 +54,6 @@ PAYLOAD_SCHEMA = "formwork.payload/v1"
 MANIFEST_NAME = "formwork-pages.json"
 #: What a directory argument expands to (its own files only; no recursion).
 SPEC_GLOB = "*.yaml"
-
-
-@dataclass(frozen=True)
-class Provenance:
-    """The shared header: which formwork compiled against which discovery."""
-
-    formwork: str
-    discovery_sha256: str
-    discovery_web_id: str
-    discovery_web_url: str
-    discovered_at: str
-
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "formwork": self.formwork,
-            "discoverySha256": self.discovery_sha256,
-            "discoveryWebId": self.discovery_web_id,
-            "discoveryWebUrl": self.discovery_web_url,
-            "discoveredAt": self.discovered_at,
-        }
-
-
-def provenance(discovery_text: str, discovery: dict[str, Any]) -> Provenance:
-    """The header for a discovery document, hashed over its exact bytes."""
-    web = discovery.get("web")
-    web = web if isinstance(web, dict) else {}
-    return Provenance(
-        formwork=__version__,
-        discovery_sha256=hashlib.sha256(discovery_text.encode("utf-8")).hexdigest(),
-        discovery_web_id=str(web.get("id") or ""),
-        discovery_web_url=str(web.get("url") or ""),
-        discovered_at=str(discovery.get("discoveredAt") or ""),
-    )
 
 
 @dataclass(frozen=True)
@@ -191,30 +158,39 @@ def compile_pages(
                 f"{seen[name]} and {spec_path} share the payload name {name}; rename one"
             )
         seen[name] = spec_path
-    discovery_text = Path(discovery_path).read_text(encoding="utf-8")
-    discovery = json.loads(discovery_text)
+    # The exact bytes, hashed as read: the stamp names this file, not a
+    # re-serialisation of it (review 2026-09-07 P2-7).
+    discovery_bytes = Path(discovery_path).read_bytes()
+    discovery = json.loads(discovery_bytes)
     cat = parse_discovery(discovery)
-    header = provenance(discovery_text, discovery)
+    header = provenance(discovery_bytes, discovery)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    results = tuple(
-        _compile_one(spec_path, cat, out, registry, max_age_days) for spec_path in specs
-    )
+    # One compile time for the run, so every payload it writes carries the
+    # same stamp and differs only in its spec name.
+    run = _Run(cat, out, header, now_iso(), registry, max_age_days)
+    results = tuple(_compile_one(spec_path, run) for spec_path in specs)
     manifest = Manifest(provenance=header, results=results, path=out / MANIFEST_NAME)
     manifest.path.write_text(json.dumps(manifest.as_dict(), indent=2) + "\n", encoding="utf-8")
     return manifest
 
 
-def _compile_one(
-    spec_path: Path,
-    cat: Catalogue,
-    out: Path,
-    registry: Registry | None,
-    max_age_days: int,
-) -> PageResult:
+@dataclass(frozen=True)
+class _Run:
+    """What every spec of one compile-pages run shares."""
+
+    cat: Catalogue
+    out: Path
+    header: Provenance
+    compiled_at: str
+    registry: Registry | None
+    max_age_days: int
+
+
+def _compile_one(spec_path: Path, run: _Run) -> PageResult:
     try:
         spec = read_spec(spec_path)
-        compiled = compile_page(spec, cat)
+        compiled = compile_page(spec, run.cat)
     except yaml.YAMLError as exc:
         return _failed(spec_path, "invalid YAML: " + " ".join(str(exc).split()))
     except ValueError as exc:  # DslError, TextError, a refused discovery document
@@ -225,15 +201,18 @@ def _compile_one(
         "title": compiled.title,
         "canvas": compiled.canvas,
         "unresolved": [],
+        PAYLOAD_KEY: payload_stamp(run.header, spec_path.name, run.compiled_at).as_dict(),
     }
-    payload_path = out / payload_name(spec_path)
+    payload_path = run.out / payload_name(spec_path)
     with open(payload_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     warnings: tuple[str, ...] = ()
-    if registry is not None:
+    if run.registry is not None:
         warnings = tuple(
-            entry.message(max_age_days)
-            for entry in stale_findings(spec, cat, registry, max_age_days=max_age_days)
+            entry.message(run.max_age_days)
+            for entry in stale_findings(
+                spec, run.cat, run.registry, max_age_days=run.max_age_days
+            )
         )
     return PageResult(
         spec=spec_path.name,
