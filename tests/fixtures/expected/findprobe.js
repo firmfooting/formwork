@@ -1,4 +1,4 @@
-// formwork findprobe v0.5.0 — run from any page of the site.
+// formwork findprobe v0.6.0 — run from any page of the site.
 // Re-runs every measurement FINDINGS.md records: creates two probe lists
 // and a scratch page, places the text, styling, property, layout and
 // list-binding probes, reads back, establishes section emphasis through

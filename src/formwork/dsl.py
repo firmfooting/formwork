@@ -8,32 +8,34 @@ against the live catalogue — an unknown or hidden component refuses to compile
 rather than emitting markup SharePoint would silently drop or mis-render.
 Output is a complete CanvasContent1 document, ready for the apply paste-in.
 
-:func:`placements` is the one walk over a spec's sections and parts, shared
-by the compiler and the preview, so both validate the same way.
+:func:`section_tree` is the one walk over a spec's sections and parts: it
+builds the :mod:`formwork.sections` tree (sections of columns of placements)
+that the compiler, the preview and the multi-page build all consume, so all
+of them validate the same way and none re-derives a column from ``type``.
+:func:`placements` is that tree flattened to written order, the canvas order.
+The section vocabulary itself (named types, measured factor sets, geometry)
+lives in :mod:`formwork.sections`, which :mod:`formwork.catalogue` shares.
 """
 
-import json
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isnan
 from typing import Any
 
-from .canvas import Canvas, Control, escape_attribute
+from .canvas import COLON_ENTITY, Canvas, Control
 from .catalogue import Catalogue, Component
+from .sections import (
+    MAX_COLUMNS,
+    MEASURED_FACTOR_SETS,
+    ROW_SPAN,
+    SECTION_FACTORS,
+    Placement,
+    Section,
+    SectionColumn,
+    written_order,
+)
 from .text import TextError, text_to_html
-
-# Section types: SharePoint's vertical section model. zoneIndex is the
-# top-to-bottom position (first section must be 1000 in the observed model —
-# CollabHome controls sit at zoneIndex 1.0 after SharePoint's own writes, so
-# both scales appear; we emit the integer scale SharePoint writes on save).
-SECTION_FACTORS: dict[str, list[int]] = {
-    "one": [12],
-    "two": [6, 6],
-    "three": [4, 4, 4],
-    "two-thirds": [8, 4],
-    "one-third": [4, 8],
-}
 
 #: The two kinds of part a spec may place.
 PART_KINDS = ("component", "text")
@@ -117,46 +119,12 @@ class CompiledPage:
     parts: list[dict[str, Any]]
 
 
-@dataclass(frozen=True)
-class Placement:
-    """One part of a spec, validated and positioned."""
-
-    ordinal: int  # 1-based across the page; becomes the control id
-    section: int  # 1-based
-    section_type: str
-    factors: tuple[int, ...]
-    column: int  # 1-based
-    control_index: int  # 1-based within the section
-    kind: str  # one of PART_KINDS
-    part: dict[str, Any]
-    emphasis: dict[str, Any] = field(default_factory=dict)  # validated control-data block
-
-    @property
-    def section_factor(self) -> int:
-        return self.factors[self.column - 1]
-
-
 def page_title(spec: dict[str, Any]) -> str:
     title = spec.get("page") or spec.get("title")
     if not title or not isinstance(title, str):
         raise DslError("spec must carry a page title under 'page'")
     return title
 
-
-#: The column factors the M5 layout probe measured persisting through the
-#: item MERGE (tests/fixtures/discovery.m5.json layoutVariants, plus the
-#: M2-era one/two/three defaults the live scratch pages always carried):
-#: 2026-09-07. Any legal factor set compiles; unmeasured sets emit a
-#: warning naming the measured set, because the evidence shows factors
-#: persist generally (4/4 split-order variants kept) while only these
-#: exact shapes are pinned.
-MEASURED_FACTOR_SETS: tuple[tuple[int, ...], ...] = (
-    (12,),
-    (6, 6),
-    (4, 4, 4),
-    (8, 4),
-    (4, 8),
-)
 
 #: The bind keys a spec may write. ``listId``/``listUrl`` required,
 #: ``viewId`` optional (the measured shapes all carry a view id, but the
@@ -195,10 +163,6 @@ BIND_COMPONENTS: frozenset[str] = frozenset({"ListWebPart"})
 #: entry (ListWebPart entry 0 'List' vs entry 1 'Document library'):
 #: measured (discovery.m5.json components, 2026-09-07).
 DOC_LIB_ENTRY_PROPERTY = ("isDocumentLibrary", True)
-
-#: Section geometry: a row of factors must sum to this, each 1-12.
-MAX_COLUMNS = 3
-ROW_SPAN = 12
 
 #: GUID shape for bind ids: bare or paired braces, case-insensitive; the
 #: value is normalised to bare lowercase before storing (every measured id
@@ -374,8 +338,14 @@ def part_bind(
     return out
 
 
-def section_factors(section: dict[str, Any], index: int) -> tuple[tuple[int, ...], str]:
-    """A section's column factors, from ``columns:`` or the named type."""
+def section_factors(
+    section: dict[str, Any], index: int
+) -> tuple[tuple[int, ...], str | None]:
+    """A section's column factors, from ``columns:`` or the named type.
+
+    Returns the factors and the type name the section used (``one`` when it
+    named neither key), or None for a section that gave ``columns:``.
+    """
     explicit = section.get("columns")
     type_name = section.get("type", "one")
     if explicit is not None and "type" in section:
@@ -407,12 +377,11 @@ def section_factors(section: dict[str, Any], index: int) -> tuple[tuple[int, ...
                 f"section {index}: illegal factor set {factors!r}: each factor is"
                 " 1-12 and the row sums to 12"
             )
-        measured = factors in MEASURED_FACTOR_SETS
-        return factors, ("measured" if measured else "unmeasured")
+        return factors, None
     if type_name not in SECTION_FACTORS:
         known = ", ".join(sorted(SECTION_FACTORS))
         raise DslError(f"unknown section type {type_name!r} (known: {known})")
-    return tuple(SECTION_FACTORS[type_name]), "measured"
+    return tuple(SECTION_FACTORS[type_name]), type_name
 
 
 def _refuse_unsupported_page_keys(spec: dict[str, Any]) -> None:
@@ -426,24 +395,38 @@ def _refuse_unsupported_page_keys(spec: dict[str, Any]) -> None:
             raise DslError(f"spec: {reason}")
 
 
-def placements(spec: dict[str, Any]) -> list[Placement]:
-    """Walk a spec's sections and parts, validating shape and geometry."""
-    sections = spec.get("sections")
-    if not isinstance(sections, list) or not sections:
+def section_tree(spec: dict[str, Any]) -> tuple[Section, ...]:
+    """Walk a spec's sections and parts, validating shape and geometry.
+
+    The one walk. Each :class:`Section` carries one :class:`SectionColumn`
+    per factor, and each column the placements written into it, in written
+    order.
+
+    A placement's ``control_index`` counts within its SECTION (the
+    compiler's convention since M1). The M5 discovery probe numbers per
+    COLUMN (split-4-8-two-col1 and -col2 both persisted controlIndex 1,
+    discovery.m5.json:4128-4163), so the two conventions disagree for the
+    second column of any multi-column section. The render-side effect is
+    UNMEASURED — whether the editor accepts, renumbers or reorders a
+    per-section number on save is open (m12 review note, 2026-09-06).
+    Reconcile with a live probe before the SavePage emphasis slice
+    depends on these numbers.
+    """
+    declared = spec.get("sections")
+    if not isinstance(declared, list) or not declared:
         raise DslError("spec must declare at least one section")
     _refuse_unsupported_page_keys(spec)
 
-    placed: list[Placement] = []
+    tree: list[Section] = []
     ordinal = 0
-    for s_index, section in enumerate(sections, start=1):
+    for s_index, section in enumerate(declared, start=1):
         if not isinstance(section, dict):
             raise DslError(f"section {s_index}: expected a mapping with 'type' and 'parts'")
         for key, reason in UNENCODABLE_SECTION_KEYS.items():
             if key in section:
                 raise DslError(f"section {s_index}: {reason}")
-        type_name = section.get("type", "one")
-        factors, factor_measure = section_factors(section, s_index)
-        if factor_measure == "unmeasured":
+        factors, type_name = section_factors(section, s_index)
+        if factors not in MEASURED_FACTOR_SETS:
             measured = " / ".join(
                 str(list(f)) for f in MEASURED_FACTOR_SETS if len(f) == len(factors)
             )
@@ -453,9 +436,7 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
                 " layoutVariants, 2026-09-07); compiling anyway.",
                 stacklevel=2,
             )
-        if type_name not in SECTION_FACTORS and "columns" not in section:
-            known = ", ".join(sorted(SECTION_FACTORS))
-            raise DslError(f"unknown section type {type_name!r} (known: {known})")
+        by_column: list[list[Placement]] = [[] for _ in factors]
         for p_index, part in enumerate(section.get("parts") or [], start=1):
             ordinal += 1
             if not isinstance(part, dict):
@@ -467,11 +448,10 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
                     f"{s_index} has {len(factors)} column(s)"
                 )
             kind = _part_kind(part, ordinal)
-            placed.append(
+            by_column[column - 1].append(
                 Placement(
                     ordinal=ordinal,
                     section=s_index,
-                    section_type=type_name,
                     factors=factors,
                     column=column,
                     control_index=p_index,
@@ -480,7 +460,23 @@ def placements(spec: dict[str, Any]) -> list[Placement]:
                     emphasis=part_emphasis(part, ordinal, kind),
                 )
             )
-    return placed
+        tree.append(
+            Section(
+                index=s_index,
+                factors=factors,
+                columns=tuple(
+                    SectionColumn(factor=factor, controls=tuple(controls))
+                    for factor, controls in zip(factors, by_column, strict=True)
+                ),
+                type_name=type_name,
+            )
+        )
+    return tuple(tree)
+
+
+def placements(spec: dict[str, Any]) -> list[Placement]:
+    """Every part of a spec, validated and positioned, in written order."""
+    return written_order(section_tree(spec))
 
 
 def part_emphasis(part: dict[str, Any], ordinal: int, kind: str) -> dict[str, Any]:
@@ -630,30 +626,10 @@ def _control_for(
         | _flat_scalars(part.get("properties"), placement.ordinal)
         | bind_props,
     }
-    open_tag = (
-        '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
-        f'data-sp-controldata="{_escaped(control_data)}">'
-    )
-    # The renderer's dirty path re-escapes from the decoded dicts, so we can
-    # emit the body through Control with empty raw attributes present.
-    wp_open = (
-        '<div data-sp-webpartdata="'
-        + _escaped(web_part_data)
-        + '" data-sp-htmlproperties=""></div>'
-    )
-    # Body: the web-part child div, then the close of the control div itself —
-    # the same shape the live canvas writes.
-    body = wp_open + "</div>"
-    control = Control(
-        open_tag=open_tag,
-        control_data=control_data,
-        web_part_data=web_part_data,
-        controldata_raw="",
-        webpartdata_raw=None,
-        body=body,
-    )
-    control.mark_dirty()
-    return control
+    # canvas.py owns the markup shape and the attribute encoding: the same
+    # encoder its dirty-render path uses, so the bytes are the ones a
+    # parsed-and-re-rendered control would carry.
+    return Control.web_part(control_data, web_part_data)
 
 
 def stored_text_html(html: str) -> str:
@@ -673,7 +649,7 @@ def stored_text_html(html: str) -> str:
     fold; ``tests/test_styling_evidence.py`` pins that it reproduces the
     stored bytes of all seven samples.
     """
-    return html.replace(":", "&#58;")
+    return html.replace(":", COLON_ENTITY)
 
 
 def _text_control(body_html: str, placement: Placement) -> Control:
@@ -699,32 +675,21 @@ def _text_control(body_html: str, placement: Placement) -> Control:
         "emphasis": {},
         "editorType": "CKEditor",
     }
-    open_tag = (
-        '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
-        f'data-sp-controldata="{_escaped(control_data)}">'
-    )
-    control = Control(
-        open_tag=open_tag,
-        control_data=control_data,
-        web_part_data=None,
-        controldata_raw="",
-        webpartdata_raw=None,
-        body=f'<div data-sp-rte="">{stored_text_html(body_html)}</div></div>',
-    )
-    control.mark_dirty()
-    return control
-
-
-def _escaped(data: dict[str, Any]) -> str:
-    return escape_attribute(json.dumps(data, separators=(",", ":")))
+    return Control.text(control_data, stored_text_html(body_html))
 
 
 def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
-    """Compile a page spec against a component catalogue."""
+    """Compile a page spec against a component catalogue.
+
+    The controls are the section tree's placements in written order: one
+    canvas control per placement, positioned from the tree (section index,
+    section factor, control index) and nothing else.
+    """
     title = page_title(spec)
     controls: list[Control] = []
     parts_out: list[dict[str, Any]] = []
-    wants_text = any(p.kind == "text" for p in placements(spec))
+    placed = placements(spec)
+    wants_text = any(p.kind == "text" for p in placed)
     if wants_text:
         matched = [s for s in cat.text_controls if s.persisted_matches() is True]
         mismatched = [s for s in cat.text_controls if s.persisted_matches() is False]
@@ -743,7 +708,7 @@ def compile_page(spec: dict[str, Any], cat: Catalogue) -> CompiledPage:
                 " site first, then re-run 'formwork compile': applying an unmeasured text"
                 " shape can abort after page creation on the byte-exact check."
             )
-    for placement in placements(spec):
+    for placement in placed:
         where = {
             "section": placement.section,
             "column": placement.column,

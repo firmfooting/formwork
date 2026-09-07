@@ -1,4 +1,4 @@
-// formwork discover v0.5.0 — run from any page of the site.
+// formwork discover v0.6.0 — run from any page of the site.
 // Creates two probe lists and a scratch page, places components, reads
 // back, recycles all three, and downloads formwork-discovery.json.
 (async () => {

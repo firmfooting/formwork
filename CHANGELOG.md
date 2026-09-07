@@ -5,6 +5,27 @@ here was measured on the shauntestazure sandbox on the date given; the
 evidence lives under `tests/fixtures/`. No tags have been cut; releases are
 the version literal in `pyproject.toml` and `src/formwork/__init__.py`.
 
+## 0.6.0 — 2026-09-07
+
+Section model and single serialiser (M9-as-built), consolidation only:
+
+- `sections.py` is the one home for the section factor tables and the
+  Section/SectionColumn/Placement tree; `compile`, `preview` and
+  `compile-pages` all consume the same tree. Fixes the M7-review P1-2
+  preview bug class structurally (preview can no longer re-derive
+  geometry from `type` and drop column-2 parts).
+- `canvas.py` is the single decode/encode for canvas attributes;
+  `catalogue.py` decodes persisted blocks through it.
+- No emitted-byte change: the golden suite diffs empty, which is the
+  milestone's acceptance proof. Two intentional non-golden changes:
+  `preview` labels `columns:` sections by their real layout
+  (`two-thirds`/`columns`) instead of always `one`, and the
+  unmeasured-factor warning now prints once per section instead of twice.
+- Honest divergence note (m9 review P2-1): the compiler numbers
+  `control_index` per SECTION; the M5 probe numbers per COLUMN. The
+  render-side effect is unmeasured; reconcile before the SavePage
+  emphasis slice.
+
 ## 0.5.0 — 2026-09-07
 
 Payload provenance and the apply guard (M8), on top of 0.4.0's page-state

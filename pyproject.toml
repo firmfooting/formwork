@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "formwork"
-version = "0.5.0"
+version = "0.6.0"
 description = "Declarative SharePoint modern pages: declare, compile, preview, apply; and copy."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Fixture counts and lengths ARE the fact under test.
 "tests/*" = ["PLR2004"]
+# The unicode round-trip test needs a typographic apostrophe on purpose
+# (re-review 2026-09-07: the dirty render must not mangle it).
+"tests/test_canvas.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.11"
