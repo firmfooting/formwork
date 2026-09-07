@@ -67,13 +67,22 @@ spec hash, formwork version. Apply reads the stamp and refuses a
 site/version mismatch without `--force`. Closes "compile against site A,
 apply on site B verifies OK".
 
-## M9 — templates and variables; authoring ergonomics (P2-6)
+## M9 (as built 2026-09-07) — section model + one serialiser (P2-6/P2-7 partial)
+
+Built on branch `feat/section-model` (stacked on M8). What landed is the
+CONSOLIDATION half of the deferred P2-7 item — the shared Section/
+SectionColumn/Placement tree and canvas.py as the one decode/encode —
+pulled forward deliberately: the M7 review's P1-2 (preview re-deriving
+geometry and dropping column-2 parts) could only be fixed structurally.
+The SavePage section-emphasis WRITE path remains deferred as below.
+
+## M10 — templates and variables; authoring ergonomics (P2-6, renumbered from M9)
 
 `page.yaml` becomes a Jinja template over a `vars` file (StrictUndefined,
 rendered before YAML parse — no DSL change). Multi-page specs may share a
 vars file. Preview grows a `--vars` passthrough.
 
-## M10 — distribution and gate breadth (P2-5)
+## M11 — distribution and gate breadth (P2-5, renumbered from M10)
 
 Tag v0.3.x, build a wheel in CI, document `pipx install`. Add Python 3.12
 and 3.13 to the matrix; add the discover script to the CI node gate.
@@ -82,7 +91,7 @@ bumps stop churning them) and `.gitattributes` eol pin land here.
 
 ## Explicitly deferred (do not pre-build)
 
-- Section model / section emphasis via SavePage (P2-7): the item-merge
+- Section emphasis via SavePage (P2-7 write path; the read-side model landed in M9-as-built): the item-merge
   measurement is done; the SavePage write path needs its own slice AFTER an
   editor-authored capture page gives us the section background shape.
 - Theme and accent: web-level, not page-level; out of scope until someone
