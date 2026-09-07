@@ -30,6 +30,9 @@ document. The choices, each pinned by tests/test_multipage.py:
   topic), not a compile-time fact.
 * ``navigation`` on any page is refused by
   :data:`formwork.dsl.UNMEASURED_PAGE_KEYS` with the cited reason.
+* **One section model.** Every page goes through
+  :func:`formwork.dsl.compile_page`, so its geometry is the section tree of
+  :mod:`formwork.sections` (M9); nothing here re-derives a column.
 """
 
 from __future__ import annotations

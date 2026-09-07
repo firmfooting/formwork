@@ -1,29 +1,21 @@
 """Standalone HTML preview of a page spec. No SharePoint, no network.
 
-The preview walks the same validated placements the compiler does
-(:func:`formwork.dsl.placements`), so a spec that previews has the geometry
+The preview lays out the same section tree the compiler compiles
+(:func:`formwork.dsl.section_tree`), so a spec that previews has the geometry
 and the text bodies a compile would emit. Component resolution is the one
 difference: without a discovery document a part's title is its alias, and a
 name the catalogue lacks is shown as unresolved rather than refused, because
 a preview is for looking, not for shipping.
 """
 
-from collections import defaultdict
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 from . import __version__
 from .catalogue import Catalogue
-from .dsl import (
-    DslError,
-    Placement,
-    page_title,
-    part_html,
-    placements,
-    resolve_component,
-    section_factors,
-)
+from .dsl import DslError, page_title, part_html, resolve_component, section_tree
+from .sections import Placement
 from .templating import render_template
 
 
@@ -46,7 +38,7 @@ class PreviewColumn:
 @dataclass(frozen=True)
 class PreviewSection:
     index: int  # 1-based
-    type: str
+    type: str  # the section's layout name (Section.layout)
     columns: tuple[PreviewColumn, ...]
 
 
@@ -60,27 +52,29 @@ class PagePreview:
 def build_preview(spec: dict[str, Any], cat: Catalogue | None = None) -> PagePreview:
     """Lay out a spec's sections, columns and parts for rendering.
 
-    Geometry comes from the placements' validated factors (one
-    ``section_factors`` call per section), never from re-deriving by
-    ``type``: a ``columns: [8, 4]`` section has no SECTION_FACTORS entry,
+    The geometry is the section tree's, column by column, never re-derived
+    by ``type``: a ``columns: [8, 4]`` section has no SECTION_FACTORS entry,
     and previewing it through the type table dropped its column-2 parts
-    (review 2026-09-07 P1-2).
+    (review 2026-09-07 P1-2). Such a section is labelled by the type whose
+    factors it uses (``two-thirds`` here), or ``columns`` when no type
+    names its set.
     """
     title = page_title(spec)
-    by_slot: dict[tuple[int, int], list[PreviewPart]] = defaultdict(list)
-    for placement in placements(spec):
-        by_slot[(placement.section, placement.column)].append(_preview_part(placement, cat))
-
-    sections: list[PreviewSection] = []
-    for index, section in enumerate(spec["sections"], start=1):
-        type_name = section.get("type", "one")
-        factors, _measure = section_factors(section, index)
-        columns = tuple(
-            PreviewColumn(factor=factor, parts=tuple(by_slot.get((index, column), ())))
-            for column, factor in enumerate(factors, start=1)
+    sections = tuple(
+        PreviewSection(
+            index=section.index,
+            type=section.layout,
+            columns=tuple(
+                PreviewColumn(
+                    factor=column.factor,
+                    parts=tuple(_preview_part(p, cat) for p in column.controls),
+                )
+                for column in section.columns
+            ),
         )
-        sections.append(PreviewSection(index=index, type=type_name, columns=columns))
-    return PagePreview(title=title, sections=tuple(sections), resolved=cat is not None)
+        for section in section_tree(spec)
+    )
+    return PagePreview(title=title, sections=sections, resolved=cat is not None)
 
 
 def _preview_part(placement: Placement, cat: Catalogue | None) -> PreviewPart:

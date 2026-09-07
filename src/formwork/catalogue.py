@@ -32,12 +32,27 @@ They are carried here as :class:`PageStateSample` rows (requested versus
 persisted, keyed by page id) plus the ``unmeasured`` topics the lane names
 rather than guesses at; the same tolerance applies, so a document from
 before the lane parses unchanged.
+
+Persisted blocks are decoded through :mod:`formwork.canvas`, the one canvas
+serialiser (M9, review 2026-09-06 P2-7): the catalogue keeps the colon fold
+(the one measured rewrite) and the pairing, and reads a stored block's
+attributes with the same parser the compiler's output would be read with.
+The layout probe's section labels are resolved against the shared
+:mod:`formwork.sections` table, so the factor set a layout variant measured
+is the same constant the compiler places by.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
+
+from .canvas import COLON_ENTITY, Canvas
+from .sections import LAYOUT_VARIANT_FACTORS
+
+#: A layout-probe row's label: ``<section>-col<n>`` (``_probe_legs.js.j2``).
+_LAYOUT_LABEL_RE = re.compile(r"^(?P<section>.+)-col(?P<column>\d+)$")
 
 
 @dataclass(frozen=True)
@@ -88,16 +103,12 @@ class TextControlSample:
         None when the sample was never persisted (or the stored bytes could
         not be read), in which case no claim is made.
         """
-        if self.persisted is None:
-            return None
-        if self.persisted == self.requested:
-            return True
-        return _fold_colons(self.persisted) == _fold_colons(self.requested)
+        return _blocks_match(self.requested, self.persisted)
 
 
 def _fold_colons(block: str) -> str:
     """The one measured normalisation, folded: ``&#58;`` and ``:`` read alike."""
-    return block.replace("&#58;", ":")
+    return block.replace(COLON_ENTITY, ":")
 
 
 def _blocks_match(requested: str, persisted: str | None) -> bool | None:
@@ -157,6 +168,12 @@ class LayoutVariant:
     ``control_data`` is the position the script wrote (the factor of the
     column the control sits in, and its index within that column), so a
     reordered or re-factored readback is attributable to one variant.
+
+    The label is ``<section>-col<n>``; ``section`` and ``column`` split it,
+    and ``factors`` is the factor set that probe section was laid out with,
+    from the shared :data:`formwork.sections.LAYOUT_VARIANT_FACTORS` table
+    (None for a label the table does not know). A row carries only its own
+    control's ``sectionFactor``, which is ``factors[column - 1]``.
     """
 
     label: str
@@ -164,6 +181,20 @@ class LayoutVariant:
     control_data: dict[str, Any]
     requested: str
     persisted: str | None
+
+    @property
+    def section(self) -> str:
+        match = _LAYOUT_LABEL_RE.match(self.label)
+        return match.group("section") if match else self.label
+
+    @property
+    def column(self) -> int | None:
+        match = _LAYOUT_LABEL_RE.match(self.label)
+        return int(match.group("column")) if match else None
+
+    @property
+    def factors(self) -> tuple[int, ...] | None:
+        return LAYOUT_VARIANT_FACTORS.get(self.section)
 
     @property
     def section_factor(self) -> int | None:
@@ -216,8 +247,8 @@ class ListBinding:
     ``list_id`` and ``list_url`` are that container's real id and
     server-relative URL as read from ``_api/web/lists``. ``web_part_data``
     is the webpartdata the script wrote and ``stored_web_part_data`` the
-    decoded webpartdata of the persisted block, or None when the control was
-    not read back.
+    webpartdata of the persisted block, decoded by :mod:`formwork.canvas`,
+    or None when the control was not read back.
     """
 
     label: str
@@ -249,6 +280,27 @@ class ListBinding:
 def _properties_of(web_part_data: dict[str, Any]) -> dict[str, Any] | None:
     properties = web_part_data.get("properties")
     return properties if isinstance(properties, dict) else None
+
+
+def _stored_web_part_data(block: str | None) -> dict[str, Any] | None:
+    """The webpartdata of a persisted block, decoded by the canvas parser.
+
+    The probe's own DOMParser decode of the same bytes rides along in the
+    row as ``webPartData``; this reads the block instead, through the one
+    serialiser (tests/test_sections.py pins the two equal on the M5
+    fixture). None when nothing was read back, the block holds no web-part
+    control, or its attribute is not JSON.
+    """
+    if block is None:
+        return None
+    try:
+        web_parts = Canvas.parse(block).web_part_controls()
+    except ValueError:
+        return None
+    first = web_parts[0] if web_parts else None
+    if first is None or first.web_part_data is None:
+        return None
+    return dict(first.web_part_data)
 
 
 @dataclass(frozen=True)
@@ -567,7 +619,6 @@ def _list_bindings(raw: Any) -> tuple[ListBinding, ...]:
         control_id = str(sent.get("id", ""))
         kept = persisted_by_id.get(control_id)
         target = _dict_or_empty(sent.get("target"))
-        stored = kept.get("webPartData") if kept else None
         bindings.append(
             ListBinding(
                 label=str(sent.get("label", "")),
@@ -580,7 +631,7 @@ def _list_bindings(raw: Any) -> tuple[ListBinding, ...]:
                 web_part_data=_dict_or_empty(sent.get("webPartData")),
                 requested=str(sent.get("canvas", "")),
                 persisted=kept["canvas"] if kept else None,
-                stored_web_part_data=dict(stored) if isinstance(stored, dict) else None,
+                stored_web_part_data=_stored_web_part_data(kept["canvas"] if kept else None),
             )
         )
     return tuple(bindings)

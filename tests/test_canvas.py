@@ -9,7 +9,16 @@ itself emits (& -> &amp; first, then < > ", then { } : as numeric entities).
 import json
 import pathlib
 
-from formwork.canvas import Canvas, escape_attribute
+import pytest
+
+from formwork.canvas import (
+    COLON_ENTITY,
+    Canvas,
+    Control,
+    decode_attribute,
+    encode_attribute,
+    escape_attribute,
+)
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "collabhome.canvas.html"
 
@@ -90,3 +99,105 @@ def test_parse_tolerates_control_without_web_part_data():
     assert canvas.controls[0].web_part_data is None
     assert canvas.controls[0].web_part_title is None
     assert canvas.render() == snippet
+
+
+# M9: canvas.py is the one serialiser. The compiler builds its controls
+# through Control.web_part / Control.text and the catalogue decodes stored
+# blocks through decode_attribute; these pin the pair and the shapes.
+
+CONTROL_DATA = {
+    "controlType": 3,
+    "id": "00000000-0000-0000-0000-000000000001",
+    "position": {
+        "zoneIndex": 1000.0,
+        "sectionIndex": 1.0,
+        "controlIndex": 1.0,
+        "zoneId": None,
+        "sectionFactor": 12,
+        "layoutIndex": 1,
+    },
+    "webPartId": "8c88f208-6c77-4bdb-86a0-0c47b4316588",
+    "emphasis": {"zoneEmphasis": 2},
+}
+
+WEB_PART_DATA = {
+    "id": "8c88f208-6c77-4bdb-86a0-0c47b4316588",
+    "instanceId": "00000000-0000-0000-0000-000000000001",
+    "title": "Bob’s <news> & \"links\"",
+    "description": "",
+    "serverProcessedContent": {"searchablePlainTexts": {"listTitle": "Docs: {a}"}},
+    "dataVersion": "1.0",
+    "properties": {"layoutId": "FeaturedNews", "count": 4, "on": True, "url": "https://x/y"},
+}
+
+
+def test_encode_and_decode_attribute_are_inverses():
+    encoded = encode_attribute(WEB_PART_DATA)
+    assert decode_attribute(encoded) == WEB_PART_DATA
+    # Compact JSON: no space after the separators json.dumps would pad.
+    assert encoded.startswith("&#123;&quot;id&quot;&#58;&quot;")
+    assert "&quot;,&quot;" in encoded
+    assert "&quot;, &quot;" not in encoded
+    # SharePoint's entities, nothing left raw, and the ampersand escaped
+    # first so nothing is double-escaped.
+    assert not any(ch in encoded for ch in '<>"{}:')
+    assert "Bob’s &lt;news&gt; &amp; \\&quot;links\\&quot;" in encoded
+    assert "&amp;#" not in encoded
+    assert "&amp;quot;" not in encoded
+    # Non-ASCII kept literal, not \\u-escaped.
+    assert "\\u2019" not in encoded
+    assert escape_attribute(":") == COLON_ENTITY == "&#58;"
+
+
+def test_decode_attribute_refuses_non_json():
+    with pytest.raises(ValueError, match="Expecting"):
+        decode_attribute("&#123;not json")
+
+
+def test_web_part_control_renders_as_a_parsed_and_dirtied_one_would():
+    control = Control.web_part(CONTROL_DATA, WEB_PART_DATA)
+    rendered = control.render()
+    assert control.dirty is False
+    # Shape: the control div, the webpartdata child with its empty
+    # htmlproperties, then the control's own close.
+    assert rendered.startswith(
+        '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" data-sp-controldata="'
+    )
+    assert '"><div data-sp-webpartdata="' in rendered
+    assert rendered.endswith('" data-sp-htmlproperties=""></div></div>')
+    assert rendered.count("<div") == 2
+    # The raw attributes are the encoded dicts, so parse reads them back.
+    assert control.controldata_raw == encode_attribute(CONTROL_DATA)
+    assert control.webpartdata_raw == encode_attribute(WEB_PART_DATA)
+    (reparsed,) = Canvas.parse(rendered).controls
+    assert reparsed.control_data == CONTROL_DATA
+    assert reparsed.web_part_data == WEB_PART_DATA
+    # And the dirty path, re-serialising from the dicts, gives the same bytes.
+    reparsed.mark_dirty()
+    assert reparsed.render() == rendered
+
+
+def test_text_control_wraps_the_inner_html_as_given():
+    control_data = {
+        "controlType": 4,
+        "id": "00000000-0000-0000-0000-000000000002",
+        "position": CONTROL_DATA["position"],
+        "emphasis": {},
+        "editorType": "CKEditor",
+    }
+    inner = "<p>Hi&#58; <a href=\"https&#58;//x\">y</a></p>"
+    control = Control.text(control_data, inner)
+    rendered = control.render()
+    assert control.dirty is False
+    assert control.web_part_data is None
+    assert control.webpartdata_raw is None
+    assert rendered == (
+        '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
+        f'data-sp-controldata="{encode_attribute(control_data)}">'
+        f'<div data-sp-rte="">{inner}</div></div>'
+    )
+    (reparsed,) = Canvas.parse(rendered).controls
+    assert reparsed.control_data == control_data
+    assert reparsed.body == f'<div data-sp-rte="">{inner}</div></div>'
+    reparsed.mark_dirty()
+    assert reparsed.render() == rendered

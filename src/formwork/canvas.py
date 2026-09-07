@@ -12,6 +12,13 @@ Measured escaping style (CollabHome.aspx, shauntestazure sandbox, 2026-09-05):
 numeric entities. Slashes and single quotes are NOT escaped. Because the
 parser keeps every control's raw attribute text, rendering a parsed, untouched
 canvas is byte-exact; only controls marked dirty are re-serialised.
+
+This module is the one serialiser for canvas attributes (architecture
+review 2026-09-06 P2-7): :func:`encode_attribute` is the JSON-then-escape
+the renderer and the compiler both emit, :func:`decode_attribute` the
+unescape-then-JSON the parser and the catalogue both read, and
+:meth:`Control.web_part` / :meth:`Control.text` the two control shapes the
+compiler writes. Nothing else in the package spells the attribute grammar.
 """
 
 import html
@@ -24,6 +31,17 @@ _CONTROL_OPEN = re.compile(r'<div data-sp-canvascontrol=""[^>]*>', re.DOTALL)
 _CONTROLDATA = re.compile(r'data-sp-controldata="([^"]*)"')
 _WEBPARTDATA = re.compile(r'data-sp-webpartdata="([^"]*)"')
 
+#: How SharePoint spells a colon inside canvas markup: in every attribute it
+#: escapes (below) and, measured 2026-09-06, in the inner HTML of a text
+#: control's ``data-sp-rte`` child on the item MERGE path
+#: (:func:`formwork.dsl.stored_text_html`; folded back on the read side by
+#: :mod:`formwork.catalogue`).
+COLON_ENTITY = "&#58;"
+
+#: The opening of every canvas control the compiler writes: the shape the
+#: discover probe sends and the live canvas stores (data version 1.0).
+_CONTROL_OPEN_PREFIX = '<div data-sp-canvascontrol="" data-sp-canvasdataversion="1.0" '
+
 
 def escape_attribute(value: str) -> str:
     """Escape a JSON string the way SharePoint escapes canvas attributes."""
@@ -34,8 +52,29 @@ def escape_attribute(value: str) -> str:
         .replace('"', "&quot;")
         .replace("{", "&#123;")
         .replace("}", "&#125;")
-        .replace(":", "&#58;")
+        .replace(":", COLON_ENTITY)
     )
+
+
+def encode_attribute(data: Any) -> str:
+    """A controldata/webpartdata attribute value: compact JSON, then escaped.
+
+    Non-ASCII stays literal (``ensure_ascii=False``): the live canvas stores
+    a curly apostrophe as the character, not ``\\u2019``, and the attribute
+    is entity-escaped anyway.
+    """
+    return escape_attribute(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
+
+
+def decode_attribute(raw: str) -> Any:
+    """The JSON value of a controldata/webpartdata attribute's raw text.
+
+    The inverse of :func:`encode_attribute` and of SharePoint's own
+    escaping; the same unescape-then-parse the discover probe does with
+    DOMParser and ``JSON.parse``. Raises ``ValueError`` (``JSONDecodeError``)
+    for an attribute that does not hold JSON.
+    """
+    return json.loads(html.unescape(raw))
 
 
 @dataclass
@@ -49,6 +88,46 @@ class Control:
     webpartdata_raw: str | None
     body: str = ""
     dirty: bool = field(default=False, repr=False)
+
+    @classmethod
+    def web_part(cls, control_data: dict[str, Any], web_part_data: dict[str, Any]) -> "Control":
+        """A web-part control: the control div wrapping a webpartdata child.
+
+        The same shape the live canvas writes and the discover probe sends
+        (discover.js.j2 step 3): the web-part child carries an empty
+        ``data-sp-htmlproperties``, then the control div closes. The raw
+        attributes are the encoded dicts, so the control renders byte-for-
+        byte as a parsed-then-dirtied one would, without being dirty.
+        """
+        controldata = encode_attribute(control_data)
+        webpartdata = encode_attribute(web_part_data)
+        # The web-part child div, then the close of the control div itself.
+        body = f'<div data-sp-webpartdata="{webpartdata}" data-sp-htmlproperties=""></div></div>'
+        return cls(
+            open_tag=f'{_CONTROL_OPEN_PREFIX}data-sp-controldata="{controldata}">',
+            control_data=control_data,
+            web_part_data=web_part_data,
+            controldata_raw=controldata,
+            webpartdata_raw=webpartdata,
+            body=body,
+        )
+
+    @classmethod
+    def text(cls, control_data: dict[str, Any], inner_html: str) -> "Control":
+        """A text control: the control div wrapping a ``data-sp-rte`` child.
+
+        ``inner_html`` is stored as given; the caller spells it the way
+        SharePoint stores it (:func:`formwork.dsl.stored_text_html`).
+        """
+        controldata = encode_attribute(control_data)
+        return cls(
+            open_tag=f'{_CONTROL_OPEN_PREFIX}data-sp-controldata="{controldata}">',
+            control_data=control_data,
+            web_part_data=None,
+            controldata_raw=controldata,
+            webpartdata_raw=None,
+            body=f'<div data-sp-rte="">{inner_html}</div></div>',
+        )
 
     @property
     def web_part_title(self) -> str | None:
@@ -74,14 +153,10 @@ class Control:
         # attribute bytes (found by the 2026-09-06 P1-fix re-review; a
         # curly apostrophe in a Quick links title was enough).
         full = self.open_tag + self.body
-        controldata = escape_attribute(
-            json.dumps(self.control_data, separators=(",", ":"), ensure_ascii=False)
-        )
+        controldata = encode_attribute(self.control_data)
         full = _CONTROLDATA.sub(lambda _m: f'data-sp-controldata="{controldata}"', full, count=1)
         if self.web_part_data is not None:
-            webpartdata = escape_attribute(
-                json.dumps(self.web_part_data, separators=(",", ":"), ensure_ascii=False)
-            )
+            webpartdata = encode_attribute(self.web_part_data)
             full = _WEBPARTDATA.sub(
                 lambda _m: f'data-sp-webpartdata="{webpartdata}"', full, count=1
             )
@@ -113,14 +188,10 @@ class Canvas:
             controldata_match = _CONTROLDATA.search(block)
             webpartdata_match = _WEBPARTDATA.search(block)
             control_data = (
-                json.loads(html.unescape(controldata_match.group(1)))
-                if controldata_match
-                else {}
+                decode_attribute(controldata_match.group(1)) if controldata_match else {}
             )
             web_part_data = (
-                json.loads(html.unescape(webpartdata_match.group(1)))
-                if webpartdata_match
-                else None
+                decode_attribute(webpartdata_match.group(1)) if webpartdata_match else None
             )
             controls.append(
                 Control(

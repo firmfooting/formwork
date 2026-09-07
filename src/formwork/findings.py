@@ -38,7 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from .catalogue import Catalogue
-from .dsl import Placement, placements, resolve_component
+from .dsl import placements, resolve_component
+from .sections import Placement
 
 #: The surfaces a check-id may name. dbml-sharepoint's convention; extend
 #: by appending, never by loosening the grammar.
@@ -78,7 +79,7 @@ EMPHASIS_CHECK_ID = "page.emphasis.control-merge"
 BIND_CHECK_ID = "page.bind.list-library-keys"
 PROPERTIES_SCOPE = "properties"
 
-#: The measured factor sets (dsl.MEASURED_FACTOR_SETS) by the row that
+#: The measured factor sets (sections.MEASURED_FACTOR_SETS) by the row that
 #: pins each: the one/two/three defaults ride on every discover run; the
 #: 8/4 and 4/8 splits are findprobe legs of their own.
 FACTOR_CHECK_IDS: dict[tuple[int, ...], str] = {
