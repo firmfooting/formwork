@@ -247,37 +247,76 @@
   verdicts["page.emphasis.section-savepage"] = sectionEmphasis.summary;
 
   // Page-state verdicts (M7): one per FINDINGS.md row, computed from the
-  // same samples the discover lane records. "PENDING LIVE RUN" rows diff
-  // DIFFERS until the first live capture lands in the fixture and the
-  // result cell is rewritten to what the server answered.
+  // measured FIELDS the claims rest on — never from create success or
+  // server-assigned ids (review 2026-09-07 P1-2: "ok (page 16)" diffs on
+  // every run and reverses of the claim still read "same").
   const psByLabel = {};
   for (const s of pageStateSamples) psByLabel[s.label] = s;
-  const psOk = label => { const s = psByLabel[label];
-    return s && s.ok ? "ok (page " + s.pageId + ")" : s ? "refused " + s.status + ": " + s.reason : "no sample"; };
-  const psPath = (sample, path) => {
-    // Dotted path through the sample's persisted steps ("read.page.fields").
-    let node = sample && sample.persisted ? sample.persisted : null;
+  const psField = (label, path, fallback) => {
+    // Dotted path through a sample's persisted steps; a missing path or
+    // sample yields the fallback so the verdict stays a stable string.
+    let node = psByLabel[label];
+    node = node && node.persisted ? node.persisted : null;
     for (const part of path.split(".")) {
       if (node && hasOwn(node, part)) node = node[part];
-      else return "missing";
+      else return fallback;
     }
-    return JSON.stringify(node);
+    // A null at the end of the path is a MEASURED null, not a missing path
+    // (review 2026-09-07 P2-4: Description reads null — that is the answer).
+    return node === undefined ? fallback : String(node);
   };
-  const psRead = (label, path) => { const s = psByLabel[label];
-    return s ? psPath(s, path) : "no sample"; };
+  // filename-slug: did the server keep the requested FileName? Compare the
+  // requested name with the stored one — run-independent by construction.
+  const fileNameKept = label => {
+    const s = psByLabel[label];
+    if (!s) return "no sample";
+    const wanted = s.requested && s.requested.create
+      ? s.requested.create.FileName : null;
+    const got = psField(label, "created.fields.FileName", null)
+      || psField(label, "read.page.fields.FileName", null);
+    return wanted && got ? (got === wanted ? "kept" : "ignored (stored " + got + ")")
+      : "no read";
+  };
   verdicts["page.page-state.filename-slug"] =
-    psOk("filename-explicit") + "; normalised: " + psOk("filename-normalised");
+    "explicit: " + fileNameKept("filename-explicit") +
+    "; slug-needing: " + fileNameKept("filename-normalised");
+  // description-banner: the AFTER-MERGE reads, folded to stable words —
+  // a banner URL in a cell would be tenant-specific.
+  const bannerKept = (() => {
+    const s = psByLabel["filename-explicit"];
+    if (!s) return "no sample";
+    const wanted = s.requested && s.requested.merge && s.requested.merge.BannerImageUrl
+      ? s.requested.merge.BannerImageUrl.Url : null;
+    const got = psField("filename-explicit", "afterMerge.page.fields.BannerImageUrl", null);
+    return wanted && got ? (got === wanted ? "persisted" : "changed") : "not persisted";
+  })();
   verdicts["page.page-state.description-banner"] =
-    psRead("filename-explicit", "read.page.fields.Description") + " / " +
-    psRead("filename-explicit", "read.page.fields.BannerImageUrl");
-  verdicts["page.page-state.layout-article"] = psOk("layout-article");
+    "description " + psField("filename-explicit", "afterMerge.page.fields.Description", "missing") +
+    "; banner " + bannerKept;
+  // layout-article: the stored layout type, not the create's exit code.
+  verdicts["page.page-state.layout-article"] =
+    "PageLayoutType " + psField("layout-article", "read.page.fields.PageLayoutType", "missing");
+  // promoted-state: the two measured values, causal claim left to the row.
   verdicts["page.page-state.promoted-state"] =
-    psOk("promoted-at-create") + "; merge flip: " + psOk("promoted-merge-flip");
-  // The publish sample has no single "read": its verdict is the flow's
-  //   end state — the afterPublish page fields.
-  verdicts["page.page-state.publish-flow"] = psRead("publish-state", "afterPublish.page.fields");
+    "at create " + psField("promoted-at-create", "read.page.fields.PromotedState", "missing") +
+    "; after merge " + psField("promoted-merge-flip", "afterMerge.page.fields.PromotedState", "missing") +
+    " (merge status " + (() => { const s = psByLabel["promoted-merge-flip"];
+      return s && s.persisted && s.persisted.merge ? s.persisted.merge.status : "?"; })() + ")";
+  // publish-flow: the flow's end state in fixed wording, from the steps.
+  const publishFlow = (() => {
+    const s = psByLabel["publish-state"];
+    if (!s) return "no sample";
+    const freshV = psField("publish-state", "fresh.page.fields.Version", "?");
+    const pub = s.persisted && s.persisted.publish ? s.persisted.publish.status : "?";
+    const afterV = psField("publish-state", "afterPublish.page.fields.Version", "?");
+    const stillOut = psField("publish-state", "afterPublish.page.fields.IsPageCheckedOutToCurrentUser", "?");
+    return "fresh " + freshV + " checked out; checkoutpage " +
+      (s.persisted && s.persisted.checkout ? s.persisted.checkout.status : "?") +
+      "; publish " + pub + " -> " + afterV + ", checked out " + stillOut;
+  })();
+  verdicts["page.page-state.publish-flow"] = publishFlow;
   verdicts["page.page-state.permission-inheritance"] =
-    psRead("filename-normalised", "read.permissions.hasUniqueRoleAssignments");
+    psField("filename-normalised", "read.permissions.hasUniqueRoleAssignments", "missing");
 
   // 7. Diff against the registry and download. "same" means the row still
   //    holds; "DIFFERS" is the operator's cue to re-measure, fold the new

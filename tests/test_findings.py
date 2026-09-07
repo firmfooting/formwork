@@ -620,3 +620,115 @@ class TestFindprobe:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.startswith("error: no findings registry at ")
+
+
+class TestPageStateVerdictDerivation:
+    """Re-review 2026-09-07 P1-1/P1-2: the page-state verdicts must be
+    derivable from the fixture by the template's own logic, and the result
+    cells must equal that derivation exactly. This test re-implements the
+    template's verdict computation in Python and diffs against FINDINGS.md;
+    it pins that the cells are RUN-INDEPENDENT (no page ids, no tenant URLs)
+    and that the publish leg reads the flow steps the sample actually
+    carries."""
+
+    def test_result_cells_equal_the_template_derivation(self):
+        document = json.loads(
+            (ROOT / "tests" / "fixtures" / "discovery.pagestate.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        samples = {s["label"]: s for s in document["pageState"]["samples"]}
+
+        def ps_field(label, path, fallback="missing"):
+            node = samples.get(label)
+            node = node.get("persisted", {}) if node else None
+            for part in path.split("."):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    return fallback
+            if node is None:
+                return "null"
+            return str(node).lower() if isinstance(node, bool) else str(node)
+
+        def file_kept(label):
+            s = samples.get(label)
+            if not s:
+                return "no sample"
+            wanted = s.get("requested", {}).get("create", {}).get("FileName")
+            got = ps_field(label, "created.fields.FileName", None) or ps_field(
+                label, "read.page.fields.FileName", None
+            )
+            if wanted and got:
+                return "kept" if got == wanted else f"ignored (stored {got})"
+            return "no read"
+
+        wanted_banner = samples["filename-explicit"]["requested"]["merge"][
+            "BannerImageUrl"
+        ]["Url"]
+        got_banner = ps_field(
+            "filename-explicit", "afterMerge.page.fields.BannerImageUrl", None
+        )
+        banner = (
+            "persisted" if got_banner == wanted_banner else "changed"
+        ) if got_banner else "not persisted"
+
+        flow = samples["publish-state"]["persisted"]
+        publish_verdict = (
+            f"fresh {ps_field('publish-state', 'fresh.page.fields.Version', '?')} checked out; "
+            f"checkoutpage {flow['checkout']['status']};"
+            f" publish {flow['publish']['status']} ->"
+            f" {ps_field('publish-state', 'afterPublish.page.fields.Version', '?')},"
+            f" checked out {ps_after_checkout(samples)}"
+        )
+
+        expected = {
+            "page.page-state.filename-slug": (
+                f"explicit: {file_kept('filename-explicit')}; "
+                f"slug-needing: {file_kept('filename-normalised')}"
+            ),
+            "page.page-state.description-banner": (
+                "description "
+                + ps_field("filename-explicit", "afterMerge.page.fields.Description")
+                + "; banner "
+                + banner
+            ),
+            "page.page-state.layout-article": (
+                "PageLayoutType "
+                + ps_field("layout-article", "read.page.fields.PageLayoutType")
+            ),
+            "page.page-state.promoted-state": (
+                f"at create {ps_field('promoted-at-create', 'read.page.fields.PromotedState')}; "
+                f"after merge"
+                f" {ps_field('promoted-merge-flip', 'afterMerge.page.fields.PromotedState')}"
+                f" (merge status {flow_merge_status(samples)})"
+            ),
+            "page.page-state.publish-flow": publish_verdict,
+            "page.page-state.permission-inheritance": ps_field(
+                "filename-normalised", "read.permissions.hasUniqueRoleAssignments"
+            ),
+        }
+        registry = load_findings(FINDINGS)
+        for check_id, cell in expected.items():
+            finding = registry.newest(check_id)
+            assert finding is not None, check_id
+            assert finding.result == cell, (check_id, finding.result, cell)
+        # Run-independence (review 2026-09-07 P1-2): no "ok (page N)" id
+        # references and no tenant URLs in any cell.
+        for check_id in expected:
+            finding = registry.newest(check_id)
+            assert not re.search(r"\(page \d+\)", finding.result), check_id
+            assert "https://" not in finding.result, check_id
+
+
+def flow_merge_status(samples):
+    return samples["promoted-merge-flip"]["persisted"]["merge"]["status"]
+
+
+def ps_after_checkout(samples):
+    """The afterPublish checkout flag, read the way the template leg reads it."""
+    node = samples["publish-state"]["persisted"]["afterPublish"]["page"]["fields"]
+    value = node["IsPageCheckedOutToCurrentUser"]
+    if value is None:
+        return "null"
+    return str(value).lower() if isinstance(value, bool) else str(value)
