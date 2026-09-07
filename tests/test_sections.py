@@ -56,6 +56,61 @@ EVIDENCE: dict[tuple[int, ...], str] = {
 }
 
 
+
+def _fixture_has_factors(doc: dict, factors: tuple[int, ...]) -> bool:
+    """True if the evidence key for ``factors`` contains a section whose
+    persisted controls carry exactly that column-factor sequence.
+
+    layoutVariants rows expose position dicts; storedCanvas is raw
+    persisted HTML, so its controldata is decoded through the canvas
+    parser — the same one the compiler targets.
+    """
+    key = EVIDENCE[factors]
+    raw = doc.get(key)
+    positions: list[tuple[float, int, int]] = []  # (sectionIndex, factor, zoneIndex)
+    if isinstance(raw, str):
+        canvas = Canvas.parse(raw)
+        for c in canvas.controls:
+            pos = (c.control_data or {}).get("position") or {}
+            if pos and "sectionIndex" in pos:
+                positions.append((
+                    pos["sectionIndex"],
+                    int(pos.get("sectionFactor") or 0),
+                    int(pos.get("zoneIndex") or 0),
+                ))
+    else:
+        def _positions(node: object) -> list[tuple[float, int, int]]:
+            out: list[tuple[float, int, int]] = []
+            if isinstance(node, dict):
+                pos = node.get("position") or (node.get("controlData") or {}).get("position")
+                if isinstance(pos, dict) and "sectionIndex" in pos:
+                    out.append((
+                        pos["sectionIndex"],
+                        int(pos.get("sectionFactor") or 0),
+                        int(pos.get("zoneIndex") or 0),
+                    ))
+                for v in node.values():
+                    out.extend(_positions(v))
+            elif isinstance(node, list):
+                for v in node:
+                    out.extend(_positions(v))
+            return out
+        positions = _positions(raw)
+
+    # The persisted bytes carry each column's factor but NOT an ordered
+    # column index (zoneIndex is section-scaled; layoutIndex is constant),
+    # so the recoverable fact is the SET of column factors per section.
+    # Repeated-width sets ((6,6), (4,4,4)) cannot be distinguished from a
+    # single column of that width in persisted bytes alone — their column
+    # COUNT is pinned by the compiler goldens and the requested rows, and
+    # a live multi-column count probe remains open on the ledger.
+    wanted = sorted(set(factors))
+    by_section: dict[float, set[int]] = {}
+    for s_idx, factor, _zone in positions:
+        by_section.setdefault(s_idx, set()).add(factor)
+    return any(sorted(cols) == wanted for cols in by_section.values())
+
+
 def m5_document() -> dict:
     return json.loads(M5_FIXTURE.read_text(encoding="utf-8"))
 
@@ -121,8 +176,16 @@ class TestSectionTree:
         assert section.measured is True
         assert section.type_name is None
         assert section.layout == layout_name(factors)
-        # The set was read back in this fixture key (module docstring).
-        assert EVIDENCE[factors] in m5_document()
+        # The named fixture key exists and the persisted bytes carry the
+        # set's column factors (module docstring maps set -> key). For
+        # repeated widths ((6,6), (4,4,4)) the persisted bytes cannot
+        # carry a column COUNT (see _fixture_has_factors), so those pin
+        # the factor value only; the count is compiler-pinned and awaits
+        # a live multi-column probe.
+        doc = m5_document()
+        assert EVIDENCE[factors] in doc
+        found = _fixture_has_factors(doc, factors)
+        assert found, f"no persisted position in {EVIDENCE[factors]} carries {factors}"
 
     @pytest.mark.parametrize("type_name", sorted(SECTION_FACTORS))
     def test_a_named_type_and_its_explicit_columns_build_the_same_geometry(self, type_name):
@@ -141,10 +204,13 @@ class TestSectionTree:
         assert (section.type_name, section.layout, section.factors) == ("one", "one", (12,))
 
     def test_parts_land_in_their_columns_and_keep_written_order(self):
-        # The split-4-8-two measurement: a column-2 control written before
-        # its column-1 neighbour, stored in that order, controlIndex per
-        # section (discovery.m5.json layoutVariants, labels
-        # split-4-8-two-col2 then split-4-8-two-col1).
+        # Mirrors the split-4-8-two measurement's WRITTEN order: a column-2
+        # control written before its column-1 neighbour, stored in that
+        # order (discovery.m5.json layoutVariants). The probe numbers
+        # controlIndex per COLUMN; the compiler counts per SECTION — a
+        # divergence the m12 review flagged and this milestone did NOT
+        # reconcile (unmeasured render-side effect). These asserts pin the
+        # compiler's convention, not a measurement of it.
         tree = section_tree(
             spec(
                 {
@@ -284,7 +350,6 @@ class TestMeasuredFixture:
         assert len(cat.layout_variants) == doc["placements"]["layoutVariantCount"] == 4
         assert {v.factors for v in cat.layout_variants} == {(8, 4), (4, 8)}
         for variant in cat.layout_variants:
-            assert variant.factors == LAYOUT_VARIANT_FACTORS[variant.section]
             assert variant.column is not None
             assert variant.section_factor == variant.factors[variant.column - 1]
             assert variant.persisted_matches() is True

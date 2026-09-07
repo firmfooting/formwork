@@ -400,10 +400,17 @@ def section_tree(spec: dict[str, Any]) -> tuple[Section, ...]:
 
     The one walk. Each :class:`Section` carries one :class:`SectionColumn`
     per factor, and each column the placements written into it, in written
-    order. A placement's ``control_index`` counts within its SECTION, not
-    its column: that is the ``controlIndex`` the M5 probe wrote and read
-    back unchanged for both split orders (discovery.m5.json layoutVariants,
-    2026-09-07), so the tree keeps it.
+    order.
+
+    A placement's ``control_index`` counts within its SECTION (the
+    compiler's convention since M1). The M5 discovery probe numbers per
+    COLUMN (split-4-8-two-col1 and -col2 both persisted controlIndex 1,
+    discovery.m5.json:4128-4163), so the two conventions disagree for the
+    second column of any multi-column section. The render-side effect is
+    UNMEASURED — whether the editor accepts, renumbers or reorders a
+    per-section number on save is open (m12 review note, 2026-09-06).
+    Reconcile with a live probe before the SavePage emphasis slice
+    depends on these numbers.
     """
     declared = spec.get("sections")
     if not isinstance(declared, list) or not declared:
