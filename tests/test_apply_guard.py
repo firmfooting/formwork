@@ -13,6 +13,7 @@ leg measured in ``page.promoted-state.create-is-effective`` (2026-09-06).
 
 import json
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -222,7 +223,10 @@ class TestTheGuardIsInTheScript:
         assert main(["gen", "apply", str(path), "--name", "P", "--promoted-state", "1"]) == 0
         with pytest.raises(SystemExit):
             main(["gen", "apply", str(path), "--name", "P", "--promoted-state", "2"])
-        assert "invalid choice: 2" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        # argparse's %r rendering of the value changed across versions
+        # (3.11 unquoted, 3.12+ quoted): accept either.
+        assert re.search(r"invalid choice: '?2'?", err), err
 
 
 @pytest.mark.skipif(not node_available(), reason="node is not installed")
