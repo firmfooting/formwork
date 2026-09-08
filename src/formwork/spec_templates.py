@@ -39,8 +39,17 @@ def load_vars(path: Path | str) -> dict[str, Any]:
     try:
         with open(file, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
+    except OSError as exc:
+        # strerror carries the reason, never file content (P2-1: a missing
+        # page vars file must fail its page, not abort the run with a
+        # traceback).
+        raise DslError(f"{file}: cannot read vars file ({exc.strerror})") from None
     except yaml.YAMLError as exc:
-        raise DslError(f"{file}: invalid YAML in vars file ({_first_line(exc)})") from exc
+        # Report position, never the offending line: PyYAML's message
+        # embeds the source line, and a vars file routinely carries
+        # values that must not reach stderr or the manifest (P1-4).
+        where = _yaml_mark(exc)
+        raise DslError(f"{file}: invalid YAML in vars file{where}") from None
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -63,6 +72,15 @@ def parse_set_overrides(pairs: Sequence[str] | None) -> dict[str, Any]:
         if not sep or not key:
             raise DslError(
                 f"--set expects name=value (got a pair without '='; name: {key!r})"
+            )
+        if "\n" in value or "\r" in value:
+            # A newline in a value can carry YAML structure (a following
+            # "  - text:" line becomes a new part). Refused with the key
+            # named, never the value (P2-4); use the vars file for
+            # multi-line values.
+            raise DslError(
+                f"--set value for {key!r} contains a newline; put multi-line"
+                " values in the vars file instead"
             )
         out[key] = value
     return out
@@ -102,6 +120,14 @@ def resolve_variables(
     variables.update(load_vars(vars_path) if vars_path is not None else {})
     variables.update(parse_set_overrides(set_pairs))
     return variables
+
+
+def _yaml_mark(exc: yaml.YAMLError) -> str:
+    """", line N, column M" from the problem mark, or "" when absent."""
+    mark = getattr(exc, "problem_mark", None)
+    if mark is None:
+        return ""
+    return f" at line {mark.line + 1}, column {mark.column + 1}"
 
 
 def _undefined_name(exc: Exception) -> str | None:

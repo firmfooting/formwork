@@ -30,7 +30,14 @@ def environment() -> Environment:
     return Environment(
         loader=FileSystemLoader(TEMPLATES_DIR),
         undefined=StrictUndefined,
-        autoescape=select_autoescape(enabled_extensions=("html.j2",), default=False),
+        autoescape=select_autoescape(
+            enabled_extensions=("html.j2",),
+            # from_string (spec templates, M10) has no filename, so
+            # without this every spec value with & < > ' " is HTML-
+            # escaped before it reaches YAML (review 2026-09-08 P1-3).
+            default_for_string=False,
+            default=False,
+        ),
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,

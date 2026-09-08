@@ -29,12 +29,16 @@ from .generator import (
     generate_extract_script,
     generate_findprobe_script,
 )
-from .multipage import PageOptions, TemplateVars, compile_pages, find_specs
+from .multipage import PageOptions, TemplateVars, compile_pages, find_specs, read_spec
 from .preview import build_preview, render_preview
-from .provenance import PAYLOAD_KEY, payload_stamp, process_stamp, provenance
+from .provenance import (
+    PAYLOAD_KEY,
+    payload_stamp,
+    process_stamp,
+    provenance,
+    template_provenance,
+)
 from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
-from .spec_templates import render_spec_text as render_spec
-from .spec_templates import resolve_variables
 
 
 def _cmd_gen_extract(_args: argparse.Namespace) -> int:
@@ -187,21 +191,15 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
 
 def _read_spec_text(path: str, args: argparse.Namespace) -> Any:
-    """Read a spec file, render it as a template when vars are in play,
-    then YAML-parse. Without --vars/--set the bytes reach the parser
-    unchanged (the golden-scripts guarantee)."""
-    variables = resolve_variables(
-        getattr(args, "vars", None), getattr(args, "set", None)
-    )
-    if not variables:
-        return _read_yaml(path)
-    source = Path(path).read_text(encoding="utf-8")
-    rendered = render_spec(source, variables, Path(path).name)
-    try:
-        spec = yaml.safe_load(rendered)
-    except yaml.YAMLError as exc:
-        raise DslError(f"{path}: template rendered to invalid YAML") from exc
-    return spec
+    """Read a spec file through the one read_spec path shared with
+    compile-pages (review 2026-09-08 P2-3). Rendering is keyed on operator
+    intent — did they pass --vars/--set — never on the resolved map, so a
+    stub vars file cannot bake literal {{ }} into a page (P2-2)."""
+    flags_given = getattr(args, "vars", None) or getattr(args, "set", None)
+    return read_spec(
+        Path(path),
+        TemplateVars(vars_path=getattr(args, "vars", None), set_pairs=getattr(args, "set", None)),
+    ) if flags_given else read_spec(Path(path), None)
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
@@ -213,7 +211,13 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     cat = parse_discovery(discovery)
     spec = _read_spec_text(args.spec, args)
     result = compile_page(spec, cat)
-    stamp = payload_stamp(provenance(discovery_bytes, discovery), Path(args.spec).name)
+    stamp = payload_stamp(
+        provenance(discovery_bytes, discovery),
+        Path(args.spec).name,
+        template=template_provenance(
+            getattr(args, "vars", None), getattr(args, "set", None)
+        ),
+    )
     payload = {
         "schema": "formwork.payload/v1",
         "sourcePage": "(compiled from spec)",
