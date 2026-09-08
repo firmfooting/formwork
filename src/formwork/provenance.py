@@ -34,8 +34,10 @@ and prints that the site check does not apply.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from . import __version__
@@ -85,15 +87,64 @@ def provenance(discovery_bytes: bytes | str, discovery: dict[str, Any]) -> Prove
 
 
 @dataclass(frozen=True)
+class TemplateProvenance:
+    """The template layer of a compile (M10, review 2026-09-08 P2-5).
+
+    Two payloads compiled from the same spec and discovery with different
+    ``--set`` values must not carry identical stamps. Values never go in
+    (they are the secret-shaped part); the vars file is hashed over its
+    exact bytes like the discovery document, and ``--set`` contributes its
+    sorted KEY NAMES as the audit trail.
+    """
+
+    vars_name: str = ""
+    vars_sha256: str = ""
+    set_keys: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "varsFile": self.vars_name,
+            "varsSha256": self.vars_sha256,
+            "setKeys": ",".join(self.set_keys),
+        }
+
+    @property
+    def empty(self) -> bool:
+        return not (self.vars_name or self.vars_sha256 or self.set_keys)
+
+
+def template_provenance(
+    vars_path: Path | str | None,
+    set_pairs: Sequence[str] | None,
+) -> TemplateProvenance:
+    """The template-layer stamp: file name + sha256 of exact bytes, and the
+    sorted --set key names. Never values."""
+    keys = tuple(sorted({pair.partition("=")[0] for pair in (set_pairs or ())}))
+    if not vars_path:
+        return TemplateProvenance(set_keys=keys)
+    raw = Path(vars_path).read_bytes()
+    return TemplateProvenance(
+        vars_name=Path(vars_path).name,
+        vars_sha256=hashlib.sha256(raw).hexdigest(),
+        set_keys=keys,
+    )
+
+
+@dataclass(frozen=True)
 class PayloadStamp:
-    """One payload's provenance: the shared header plus which spec, and when."""
+    """One payload's provenance: the shared header plus which spec, when,
+    and (M10) which template variables produced it."""
 
     header: Provenance
     spec: str
     compiled_at: str
+    template: TemplateProvenance | None = None
 
     def as_dict(self) -> dict[str, str]:
-        return {**self.header.as_dict(), "spec": self.spec, "compiledAt": self.compiled_at}
+        out = {**self.header.as_dict(), "spec": self.spec, "compiledAt": self.compiled_at}
+        if self.template is not None and not self.template.empty:
+            out.update(self.template.as_dict())
+        return out
 
     def one_liner(self) -> str:
         """What ``compile`` prints after "payload written": the stamp, one line.
@@ -102,12 +153,19 @@ class PayloadStamp:
         ``compile-pages`` line; the payload holds the full value.
         """
         h = self.header
-        return (
+        line = (
             f"provenance: formwork {h.formwork} compiled {self.spec} at {self.compiled_at}"
             f" against discovery sha256 {h.discovery_sha256[:12]}"
             f" (web {h.discovery_web_id or '?'} at {h.discovery_web_url or '?'},"
             f" discovered {h.discovered_at or '?'})"
         )
+        if self.template is not None and not self.template.empty:
+            t = self.template
+            bits = [f" vars {t.vars_name or '-'} sha256 {t.vars_sha256[:12] or '-'}"]
+            if t.set_keys:
+                bits.append(f" set[{','.join(t.set_keys)}]")
+            line += ";" + "".join(bits)
+        return line
 
 
 def now_iso() -> str:
@@ -115,8 +173,15 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def payload_stamp(header: Provenance, spec: str, compiled_at: str | None = None) -> PayloadStamp:
-    return PayloadStamp(header=header, spec=spec, compiled_at=compiled_at or now_iso())
+def payload_stamp(
+    header: Provenance,
+    spec: str,
+    compiled_at: str | None = None,
+    template: TemplateProvenance | None = None,
+) -> PayloadStamp:
+    return PayloadStamp(
+        header=header, spec=spec, compiled_at=compiled_at or now_iso(), template=template
+    )
 
 
 def process_stamp(bundle: str, processed_at: str | None = None) -> dict[str, str]:
