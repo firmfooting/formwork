@@ -76,6 +76,18 @@ pulled forward deliberately: the M7 review's P1-2 (preview re-deriving
 geometry and dropping column-2 parts) could only be fixed structurally.
 The SavePage section-emphasis WRITE path remains deferred as below.
 
+## M10 — templates and variables; authoring ergonomics (P2-6, renumbered from M9) — BUILT (PR #10) + REVIEW-FOLDED 2026-09-08
+
+Built by the agent directly (Claude usage-capped; Fable window shifted,
+Opus used for review). One commit of feature (a392224) plus the full
+adversarial-review fold (12d8361, 5 P1): intent-keyed rendering (no flags
+= bytes unchanged), one read_spec for compile and compile-pages,
+default_for_string=False (values were being HTML-escaped),
+content-free vars-file refusals, line-anchored page vars-key lookup,
+newline-refused --set values, TemplateProvenance (vars sha256 + --set
+key names, never values) on every stamp. 474 tests; the review's six
+demanded test classes are in tests/test_spec_templates.py.
+
 ## M10 — templates and variables; authoring ergonomics (P2-6, renumbered from M9)
 
 `page.yaml` becomes a Jinja template over a `vars` file (StrictUndefined,
