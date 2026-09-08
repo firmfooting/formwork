@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import glob
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,9 +51,36 @@ from .catalogue import Catalogue, parse_discovery
 from .dsl import DslError, compile_page
 from .findings import DEFAULT_MAX_AGE_DAYS, Registry, stale_findings
 from .provenance import PAYLOAD_KEY, Provenance, now_iso, payload_stamp, provenance
+from .spec_templates import (
+    load_vars,
+    parse_set_overrides,
+    resolve_variables,
+)
+from .spec_templates import (
+    render_spec_text as render_spec,
+)
 
 #: The manifest's schema tag; the payloads keep ``compile``'s.
 MANIFEST_SCHEMA = "formwork.pages/v1"
+
+
+@dataclass(frozen=True)
+class PageOptions:
+    """Everything optional about a compile-pages run: the findings registry
+    (plus its staleness age) and the M10 template layer."""
+
+    registry: Registry | None = None
+    max_age_days: int = DEFAULT_MAX_AGE_DAYS
+    template_vars: TemplateVars | None = None
+
+
+@dataclass(frozen=True)
+class TemplateVars:
+    """The template layer of a compile-pages run (M10): a shared vars file
+    and ``--set`` pairs, resolved once and handed to every spec."""
+
+    vars_path: Path | str | None = None
+    set_pairs: Sequence[str] | None = None
 PAYLOAD_SCHEMA = "formwork.payload/v1"
 MANIFEST_NAME = "formwork-pages.json"
 #: What a directory argument expands to (its own files only; no recursion).
@@ -128,13 +156,65 @@ def payload_name(spec_path: Path) -> str:
     return f"{spec_path.stem}.payload.json"
 
 
-def read_spec(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as fh:
-        spec = yaml.safe_load(fh)
+def read_spec(
+    path: Path,
+    shared_vars: dict[str, Any] | None = None,
+    set_keys: frozenset[str] | None = None,
+    set_map: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read one page spec, rendering it as a template when variables exist.
+
+    Without variables the file's bytes go to the YAML parser unchanged.
+    A page may also carry a ``vars:`` key naming ITS OWN template-vars
+    file, resolved relative to the spec; those values override any shared
+    ``--vars`` values (a page knows its own needs). ``set_map``/``set_keys``
+    carry the explicit ``--set`` variables: they outrank the page file,
+    and a page file trying to shadow one is refused rather than silently
+    losing (an operator's explicit override must hold).
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    variables: dict[str, Any] = dict(shared_vars or {})
+    # A page's own ``vars:`` key has to be findable BEFORE rendering — the
+    # template text does not parse as YAML while {{ }} placeholders are in
+    # it. A leading-line regex on a top-level ``vars: file`` entry is the
+    # cheap, safe read; a YAML parse of the whole file can't work here.
+    own_match = re.match(r"(?m)^vars:[ \t]*(\S[^\n]*)\n", text)
+    own = own_match.group(1).strip().strip("'\"") if own_match else None
+    if own is not None:
+        if not isinstance(own, str):
+            raise DslError(f"{path.name}: 'vars' names a file, not {type(own).__name__}")
+        own_path = (path.parent / own).resolve()
+        own_values = load_vars(own_path)
+        if set_keys:
+            clashing = sorted(k for k in own_values if k in (set_keys or frozenset()))
+            if clashing:
+                raise DslError(
+                    f"{path.name}: its vars file {own} would override the"
+                    f" explicit --set value(s) for {', '.join(clashing)};"
+                    " remove them from one side"
+                )
+        variables.update(own_values)
+        # --set values re-apply on top of the page file, always winning:
+        # the caller passes the set map alongside the shared map.
+        for k, v in (set_map or {}).items():
+            variables[k] = v
+    # Rendering happens whenever a variable map was supplied at all (even
+    # empty: StrictUndefined then turns any {{ name }} into a named refusal).
+    # With none supplied, the file is data: a literal {{ ... }} in a spec
+    # with no --vars passes through untouched (no-vars-no-change contract).
+    if shared_vars is not None or own is not None:
+        rendered = render_spec(text, variables, path.name)
+        try:
+            spec = yaml.safe_load(rendered)
+        except yaml.YAMLError as exc:
+            raise DslError(f"{path}: template rendered to invalid YAML") from exc
+    else:
+        spec = yaml.safe_load(text)
     if not isinstance(spec, dict):
         raise DslError(
             f"a spec is a mapping with 'page' and 'sections', not {type(spec).__name__}"
         )
+    spec.pop("vars", None)
     return spec
 
 
@@ -142,9 +222,7 @@ def compile_pages(
     spec_paths: Sequence[Path],
     discovery_path: Path | str,
     out_dir: Path | str,
-    *,
-    registry: Registry | None = None,
-    max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+    options: PageOptions | None = None,
 ) -> Manifest:
     """Compile every spec against the one discovery document into ``out_dir``.
 
@@ -171,7 +249,21 @@ def compile_pages(
     out.mkdir(parents=True, exist_ok=True)
     # One compile time for the run, so every payload it writes carries the
     # same stamp and differs only in its spec name.
-    run = _Run(cat, out, header, now_iso(), registry, max_age_days)
+    opts = options or PageOptions()
+    tv = opts.template_vars or TemplateVars()
+    set_map = parse_set_overrides(tv.set_pairs)
+    shared_vars = resolve_variables(tv.vars_path, None)
+    run = _Run(
+        cat,
+        out,
+        header,
+        now_iso(),
+        opts.registry,
+        opts.max_age_days,
+        shared_vars,
+        frozenset(set_map),
+        set_map,
+    )
     results = tuple(_compile_one(spec_path, run) for spec_path in specs)
     manifest = Manifest(provenance=header, results=results, path=out / MANIFEST_NAME)
     manifest.path.write_text(json.dumps(manifest.as_dict(), indent=2) + "\n", encoding="utf-8")
@@ -188,11 +280,16 @@ class _Run:
     compiled_at: str
     registry: Registry | None
     max_age_days: int
+    shared_vars: dict[str, Any]
+    set_keys: frozenset[str]
+    set_map: dict[str, Any]
 
 
 def _compile_one(spec_path: Path, run: _Run) -> PageResult:
     try:
-        spec = read_spec(spec_path)
+        spec = read_spec(
+            spec_path, run.shared_vars, run.set_keys, run.set_map
+        )
         compiled = compile_page(spec, run.cat)
     except yaml.YAMLError as exc:
         return _failed(spec_path, "invalid YAML: " + " ".join(str(exc).split()))

@@ -27,6 +27,7 @@ from formwork.multipage import (
     MANIFEST_NAME,
     MANIFEST_SCHEMA,
     PAYLOAD_SCHEMA,
+    PageOptions,
     compile_pages,
     find_specs,
     provenance,
@@ -253,7 +254,10 @@ class TestCompilePages:
             )
         )
         manifest = compile_pages(
-            find_specs(str(pages)), discovery, tmp_path / "build", registry=registry
+            find_specs(str(pages)),
+            discovery,
+            tmp_path / "build",
+            PageOptions(registry=registry),
         )
         (result,) = manifest.results
         assert result.ok

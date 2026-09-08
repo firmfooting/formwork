@@ -29,10 +29,12 @@ from .generator import (
     generate_extract_script,
     generate_findprobe_script,
 )
-from .multipage import compile_pages, find_specs
+from .multipage import PageOptions, TemplateVars, compile_pages, find_specs
 from .preview import build_preview, render_preview
 from .provenance import PAYLOAD_KEY, payload_stamp, process_stamp, provenance
 from .refs import REPORT_ONLY_KINDS, apply_plan, build_plan, scan, scan_canvas
+from .spec_templates import render_spec_text as render_spec
+from .spec_templates import resolve_variables
 
 
 def _cmd_gen_extract(_args: argparse.Namespace) -> int:
@@ -172,7 +174,7 @@ def _cmd_components(args: argparse.Namespace) -> int:
 
 
 def _cmd_preview(args: argparse.Namespace) -> int:
-    spec = _read_yaml(args.spec)
+    spec = _read_spec_text(args.spec, args)
     cat = parse_discovery(_read_json(args.discovery)) if args.discovery else None
     document = render_preview(build_preview(spec, cat))
     if not args.out:
@@ -184,6 +186,24 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_spec_text(path: str, args: argparse.Namespace) -> Any:
+    """Read a spec file, render it as a template when vars are in play,
+    then YAML-parse. Without --vars/--set the bytes reach the parser
+    unchanged (the golden-scripts guarantee)."""
+    variables = resolve_variables(
+        getattr(args, "vars", None), getattr(args, "set", None)
+    )
+    if not variables:
+        return _read_yaml(path)
+    source = Path(path).read_text(encoding="utf-8")
+    rendered = render_spec(source, variables, Path(path).name)
+    try:
+        spec = yaml.safe_load(rendered)
+    except yaml.YAMLError as exc:
+        raise DslError(f"{path}: template rendered to invalid YAML") from exc
+    return spec
+
+
 def _cmd_compile(args: argparse.Namespace) -> int:
     registry = _registry_for(args)
     # The stamp hashes the discovery file's exact bytes, so read them once and
@@ -191,7 +211,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     discovery_bytes = Path(args.discovery).read_bytes()
     discovery = json.loads(discovery_bytes)
     cat = parse_discovery(discovery)
-    spec = _read_yaml(args.spec)
+    spec = _read_spec_text(args.spec, args)
     result = compile_page(spec, cat)
     stamp = payload_stamp(provenance(discovery_bytes, discovery), Path(args.spec).name)
     payload = {
@@ -233,8 +253,11 @@ def _cmd_compile_pages(args: argparse.Namespace) -> int:
         specs,
         args.discovery,
         args.out_dir,
-        registry=registry,
-        max_age_days=args.findings_max_age,
+        PageOptions(
+            registry=registry,
+            max_age_days=args.findings_max_age,
+            template_vars=TemplateVars(vars_path=args.vars, set_pairs=args.set),
+        ),
     )
     built = sum(1 for result in manifest.results if result.ok)
     header = manifest.provenance
@@ -281,16 +304,44 @@ def _read_json(path: str) -> Any:
         return json.load(fh)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="formwork",
-        description="SharePoint page copier: extract, process, apply.",
+def _add_findings_args(parser: argparse.ArgumentParser) -> None:
+    """The findings-registry flags shared by compile and compile-pages."""
+    parser.add_argument(
+        "--findings",
+        help="the findings registry to judge the spec's evidence by (default:"
+        f" {DEFAULT_PATH} in the working directory; silent when absent)",
     )
-    parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--findings-max-age",
+        type=int,
+        default=DEFAULT_MAX_AGE_DAYS,
+        metavar="DAYS",
+        help="warn when a relied-on measurement is older than this many days"
+        f" (default {DEFAULT_MAX_AGE_DAYS})",
+    )
 
-    gen = sub.add_parser("gen", help="generate console paste-in scripts")
-    gen_sub = gen.add_subparsers(dest="gen_command", required=True)
+
+def _add_template_args(parser: argparse.ArgumentParser) -> None:
+    """The M10 template flags, shared by compile, compile-pages, preview."""
+    parser.add_argument(
+        "--vars",
+        metavar="FILE",
+        help="YAML mapping of template variables for the spec file(s);"
+        " values are data, the file is safe_load-only",
+    )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="NAME=VALUE",
+        help="one template variable, overriding --vars; repeatable",
+    )
+
+
+
+
+def _add_gen_parsers(gen_sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The `formwork gen *` family (paste-in script generators)."""
     gen_extract = gen_sub.add_parser(
         "extract", help="script that downloads the source page bundle"
     )
@@ -331,6 +382,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen_apply.set_defaults(func=_cmd_gen_apply)
 
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="formwork",
+        description="SharePoint page copier: extract, process, apply.",
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    gen = sub.add_parser("gen", help="generate console paste-in scripts")
+    gen_sub = gen.add_subparsers(dest="gen_command", required=True)
+    _add_gen_parsers(gen_sub)
     inspect_p = sub.add_parser(
         "inspect", help="list the site-bound references in a bundle"
     )
@@ -358,19 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
     compile_p.add_argument(
         "--out", default="formwork-payload.json", help="where to write the payload"
     )
-    compile_p.add_argument(
-        "--findings",
-        help="the findings registry to judge the spec's evidence by (default:"
-        f" {DEFAULT_PATH} in the working directory; silent when absent)",
-    )
-    compile_p.add_argument(
-        "--findings-max-age",
-        type=int,
-        default=DEFAULT_MAX_AGE_DAYS,
-        metavar="DAYS",
-        help="warn when a relied-on measurement is older than this many days"
-        f" (default {DEFAULT_MAX_AGE_DAYS})",
-    )
+    _add_findings_args(compile_p)
+    _add_template_args(compile_p)
     compile_p.set_defaults(func=_cmd_compile)
 
     compile_pages_p = sub.add_parser(
@@ -389,19 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="where to write <spec>.payload.json per spec and formwork-pages.json",
     )
-    compile_pages_p.add_argument(
-        "--findings",
-        help="the findings registry to judge each spec's evidence by (default:"
-        f" {DEFAULT_PATH} in the working directory; silent when absent)",
-    )
-    compile_pages_p.add_argument(
-        "--findings-max-age",
-        type=int,
-        default=DEFAULT_MAX_AGE_DAYS,
-        metavar="DAYS",
-        help="warn when a relied-on measurement is older than this many days"
-        f" (default {DEFAULT_MAX_AGE_DAYS})",
-    )
+    _add_findings_args(compile_pages_p)
+    _add_template_args(compile_pages_p)
     compile_pages_p.set_defaults(func=_cmd_compile_pages)
 
     preview_p = sub.add_parser(
@@ -415,6 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(without it, titles are the aliases in the spec)",
     )
     preview_p.add_argument("--out", help="where to write the HTML (default: stdout)")
+    _add_template_args(preview_p)
     preview_p.set_defaults(func=_cmd_preview)
 
     process_p = sub.add_parser(
