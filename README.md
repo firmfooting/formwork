@@ -503,29 +503,39 @@ Two commands read it.
 
 ## Install
 
-From a release wheel (pipx keeps the CLI isolated):
+Releases are published as wheels on this repository's GitHub Releases page
+(there is no PyPI publication — do not `pip install formwork` from PyPI; the
+name is not ours there). Install a release wheel directly:
 
 ```
-pipx install formwork
+pipx install https://github.com/firmfooting/formwork/releases/latest/download/formwork-0.6.0-py3-none-any.whl
 ```
 
-or with pip, into whatever environment you manage:
+(pinning the URL to a known release is safer than `latest`; bump the version
+as releases land.) Or with pip, into whatever environment you manage:
 
 ```
-pip install formwork
+pip install <the same wheel URL>
 ```
 
-Both give you the `formwork` command. The paste-in generators print scripts
-that run in your browser; nothing else touches your tenant.
+Both give you the `formwork` command: `compile`, `compile-pages`, `preview`,
+`process`, `inspect`, `components`, and the `gen` paste-in generators. One
+caveat: `formwork gen findprobe` reads the findings registry from
+`FINDINGS.md` in the working directory, so it only runs from a formwork
+repository checkout — everything else runs anywhere.
 
 ## Development
 
 ```
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
-.venv/bin/ruff check .
-.venv/bin/mypy src
+uv sync
+uv run pytest
+uv run ruff check .
+uv run mypy src
 ```
+
+`uv sync --locked` is what CI runs; relock with `uv lock` whenever you touch
+`pyproject.toml`, or CI's `--locked` check fails the PR. (A plain venv +
+`pip install -e '.[dev]'` also works locally, but uv is what the gates run.)
 
 The paste-ins and the preview are Jinja templates under
 `src/formwork/templates/` (`jinja2` is the one runtime dependency besides

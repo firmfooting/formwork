@@ -21,8 +21,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Which interpreter is under test (evidence, not the job name)
+        run: uv run --no-sync python -VV
       - name: Install
-        run: uv sync --frozen
+        run: uv sync --locked
       - name: Pytest
         run: uv run --no-sync pytest -q
 
@@ -36,7 +40,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Install
-        run: uv sync --frozen
+        run: uv sync --locked
       - name: Ruff
         run: uv run --no-sync ruff check .
       - name: Mypy
@@ -55,15 +59,21 @@ jobs:
           node-version: 22
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Install
-        run: uv sync --frozen
-      - name: Generated scripts are valid JS
+        run: uv sync --locked
+      - name: All five generated scripts are valid JS (review 2026-09-08 P2-4)
         run: |
           uv run --no-sync python -c "
-          from formwork.generator import generate_extract_script, generate_apply_script
+          from formwork.generator import generate_extract_script, generate_discover_script, generate_apply_script, generate_findprobe_script
+          from formwork.findings import load_findings
           from pathlib import Path
-          import subprocess, sys, json
-          scripts = [generate_extract_script(), generate_apply_script()]
-          scripts.append(generate_apply_script(page_name='X', canvas_payload=json.dumps({'canvas': '<div></div>', 'title': 'X'})))
+          import subprocess, json
+          scripts = [
+              generate_extract_script(),
+              generate_discover_script(),
+              generate_apply_script(),
+              generate_apply_script(page_name='X', canvas_payload=json.dumps({'canvas': '<div></div>', 'title': 'X'})),
+              generate_findprobe_script(load_findings(Path('FINDINGS.md'))),
+          ]
           for i, s in enumerate(scripts):
               p = Path(f'/tmp/fw-generated-{i}.js'); p.write_text(s, encoding='utf-8')
               subprocess.run(['node', '--check', str(p)], check=True)

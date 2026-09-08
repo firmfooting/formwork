@@ -9,22 +9,34 @@ them to a GitHub release.
 
 ## Unreleased
 
-Distribution and gate breadth (M11) — no version bump yet; the next bump
+Distribution, gate breadth and CI security posture (M11), folded with the
+2026-09-08 adversarial review (Opus). No version bump yet; the next bump
 (0.7.0) will be the first to enjoy the golden version sentinel.
 
-- CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows.
-- A `release.yml` workflow: a `v*` tag builds the wheel + sdist and attaches
-  them to a GitHub release. Actions are SHA-pinned; `permissions: {}` at the
-  top level, `contents: write` only on the release job.
-- The wheel is verified to ship the Jinja templates (a wheel without them
-  renders nothing) and is smoke-tested with a clean `pip install` +
-  `formwork gen extract`.
-- The golden version sentinel: the golden comparison folds the version
-  string on both sides, so a version bump no longer rewrites five golden
-  files (`.venv/bin/python tests/test_generator.py` output is empty across
-  a bump). Template changes still fail the goldens — that contract is
-  unchanged.
-- README gains the pipx/pip install path.
+- CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows —
+  each leg logs `python -VV` so the interpreter under test is evidence, not
+  a job name (review P1-1: the matrix existed but never selected the
+  interpreter).
+- A `release.yml` workflow: a `v*` tag runs the suite, asserts the tag
+  matches `pyproject.toml`'s version, builds the wheel + sdist on the locked
+  toolchain with caches disabled, verifies the wheel ships every Jinja
+  template, and attaches the artifacts to a GitHub release
+  (`gh release create` with `GH_REPO` set — review P1-2/P2-1). Actions are
+  SHA-pinned; `permissions: {}` at the top level.
+- Workflow security gate: `zizmor` (pinned 1.29.0) runs on every push/PR and
+  fails on any finding; all workflows pass with zero findings.
+- Dependencies are locked (`uv.lock` committed); CI installs with
+  `uv sync --locked` so a PR cannot pass on locally-upgraded deps.
+- The golden version sentinel: committed goldens are version-free (they
+  carry `__FORMWORK_VERSION__` where a version literal belongs), the
+  comparison folds only the generated side, and delimited folds keep
+  measurement prose ("apply before 0.5.0") un-rewritten (review P2-3). A
+  bump test patches the version to 9.9.9 and re-checks the goldens —
+  a real independence test, replacing the tautology the first cut shipped
+  (review P2-2).
+- README install section points at GitHub release wheels — formwork is not
+  on PyPI and the section no longer implies it is (review P1-3) — and the
+  development commands are the uv ones CI runs.
 
 ## 0.6.0 — 2026-09-07
 

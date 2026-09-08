@@ -20,7 +20,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - name: Audit workflows
+      - name: Audit workflows (pinned — the security gate must be reproducible)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx zizmor .github/workflows
+          GH_REPO: ${{ github.repository }}
+        run: uvx zizmor@1.29.0 .github/workflows
