@@ -2,8 +2,29 @@
 
 Dates are the dates of the commits on `main`. Every SharePoint behaviour named
 here was measured on the shauntestazure sandbox on the date given; the
-evidence lives under `tests/fixtures/`. No tags have been cut; releases are
-the version literal in `pyproject.toml` and `src/formwork/__init__.py`.
+evidence lives under `tests/fixtures/`. Releases are the version literal in
+`pyproject.toml` and `src/formwork/__init__.py`; a version tag `v<version>`
+triggers the release workflow, which builds the wheel + sdist and attaches
+them to a GitHub release.
+
+## Unreleased
+
+Distribution and gate breadth (M11) — no version bump yet; the next bump
+(0.7.0) will be the first to enjoy the golden version sentinel.
+
+- CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows.
+- A `release.yml` workflow: a `v*` tag builds the wheel + sdist and attaches
+  them to a GitHub release. Actions are SHA-pinned; `permissions: {}` at the
+  top level, `contents: write` only on the release job.
+- The wheel is verified to ship the Jinja templates (a wheel without them
+  renders nothing) and is smoke-tested with a clean `pip install` +
+  `formwork gen extract`.
+- The golden version sentinel: the golden comparison folds the version
+  string on both sides, so a version bump no longer rewrites five golden
+  files (`.venv/bin/python tests/test_generator.py` output is empty across
+  a bump). Template changes still fail the goldens — that contract is
+  unchanged.
+- README gains the pipx/pip install path.
 
 ## 0.6.0 — 2026-09-07
 

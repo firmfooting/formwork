@@ -1,4 +1,4 @@
-// formwork extract v0.6.0 — run from the source page itself.
+// formwork extract v__FORMWORK_VERSION__ — run from the source page itself.
 (async () => {
   const SCHEMA = "formwork.bundle/v1";
   const VERBOSE = "application/json;odata=verbose";
@@ -218,7 +218,7 @@
       webId: web.d.Id,
       siteId: site.d.Id,
     },
-    meta: { webTitle: web.d.Title, formworkVersion: "0.6.0" },
+    meta: { webTitle: web.d.Title, formworkVersion: "__FORMWORK_VERSION__" },
     page: page,
     sections: [],
   };

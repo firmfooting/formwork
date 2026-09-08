@@ -501,6 +501,23 @@ Two commands read it.
   DIFFERS row is the cue to re-measure, fold the capture into the fixtures
   and add a dated row; the old row stays.
 
+## Install
+
+From a release wheel (pipx keeps the CLI isolated):
+
+```
+pipx install formwork
+```
+
+or with pip, into whatever environment you manage:
+
+```
+pip install formwork
+```
+
+Both give you the `formwork` command. The paste-in generators print scripts
+that run in your browser; nothing else touches your tenant.
+
 ## Development
 
 ```
