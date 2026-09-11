@@ -59,10 +59,10 @@ from .provenance import (
     template_provenance,
 )
 from .spec_templates import (
-    _first_line,
     load_vars,
     parse_set_overrides,
     resolve_variables,
+    yaml_error_position,
 )
 from .spec_templates import (
     render_spec_text as render_spec,
@@ -232,9 +232,13 @@ def read_spec(
         try:
             spec = yaml.safe_load(rendered)
         except yaml.YAMLError as exc:
-            where = _first_line(exc)
+            # PyYAML's message embeds the offending source line — and this
+            # source is RENDERED text, so that line carries a substituted
+            # value into stderr and into formwork-pages.json. Report the
+            # position only (P1-4's sibling; spec_templates.load_vars).
             raise DslError(
-                f"{path.name}: template rendered to invalid YAML ({where})"
+                f"{path.name}: template rendered to invalid YAML"
+                f"{yaml_error_position(exc)}"
             ) from None
     else:
         spec = yaml.safe_load(text)

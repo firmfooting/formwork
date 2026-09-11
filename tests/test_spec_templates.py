@@ -187,6 +187,22 @@ class TestReadSpec:
         with pytest.raises(DslError, match="cannot read vars file"):
             read_spec(p, TemplateVars())
 
+    def test_a_rendered_spec_that_breaks_yaml_never_echoes_the_value(self, tmp_path):
+        # P1-4's sibling: here the line PyYAML reports is RENDERED text, so
+        # its snippet carries the substituted value. The refusal must name
+        # the file and the position and nothing else.
+        p = _write(
+            tmp_path,
+            "spec.yaml",
+            "title: t\nsections:\n  - parts:\n      - text: {{ msg }}\n",
+        )
+        with pytest.raises(DslError) as excinfo:
+            read_spec(p, TemplateVars(set_pairs=[f"msg={SECRET}: breaks"]))
+        message = str(excinfo.value)
+        assert "invalid YAML" in message
+        assert "line" in message
+        assert SECRET not in message
+
 
 class TestCompilePagesCli:
     """The end-to-end layer P1-1/P1-2 shipped without."""
@@ -271,6 +287,27 @@ class TestCompilePagesCli:
         on_disk = (out / "formwork-pages.json").read_text(encoding="utf-8")
         assert SECRET not in on_disk
         assert SECRET not in (result.error or "")
+
+    def test_a_rendered_spec_that_breaks_yaml_puts_no_value_in_the_manifest(self, tmp_path):
+        # The sibling of the vars-file pin above, on the render path: the
+        # failing line is rendered text, so its snippet carries a value.
+        pages = _write(
+            tmp_path,
+            "a.yaml",
+            "title: t\nsections:\n  - parts:\n      - text: {{ msg }}\n",
+        )
+        out = tmp_path / "build"
+        manifest = compile_pages(
+            find_specs(str(pages)),
+            self._discovery(tmp_path, with_text=True),
+            out,
+            PageOptions(template_vars=TemplateVars(set_pairs=[f"msg={SECRET}: breaks"])),
+        )
+        (result,) = manifest.results
+        assert not result.ok
+        assert SECRET not in (result.error or "")
+        on_disk = (out / "formwork-pages.json").read_text(encoding="utf-8")
+        assert SECRET not in on_disk
 
     def test_the_stamp_records_the_template_layer_without_values(self, tmp_path):
         vars_file = _write(tmp_path, "vars.yaml", "env: prod\n")
