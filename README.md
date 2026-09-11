@@ -80,7 +80,10 @@ target site                     your laptop                          target site
    `compile`: the formwork version, the SHA-256 of the discovery file's
    bytes, the discovery's web id, web URL and timestamp, the spec name and
    the compile time (`compile` prints it on the line after "payload
-   written"). Before it creates anything, the apply script reads the web it
+   written"). When the compile used the template layer, the stamp also names
+   the vars file and its SHA-256, a page's own `vars:` file and its SHA-256,
+   and the sorted `--set` key names — never their values (see "Templated
+   specs"). Before it creates anything, the apply script reads the web it
    runs on and refuses, listing the stamp's value beside the observed one,
    when the web id or URL differs, when the payload's formwork is newer than
    the script's own version, or when there is no stamp at all (a payload from
@@ -197,6 +200,55 @@ dropped", while on a SavePage-established page a newly merged control with
 section-level `emphasis:` key refuses and names that limitation. Put the key
 on the parts, and expect the stored bytes rather than the colour until that
 path is measured.
+
+### Templated specs
+
+A spec file is rendered as a Jinja2 template *before* the YAML parser sees
+it, so one page per site (or per environment) can come from one spec.
+Rendering is opt-in: it happens only when the command carries `--vars` or
+`--set`, or the spec itself carries a top-level `vars:` key. With no flags
+the spec's bytes reach the parser unchanged, so a spec holding literal
+`{{ ... }}` text keeps compiling as data.
+
+```yaml
+vars: vars/finance.yaml      # this page's own vars file, relative to the spec
+page: Finance {{ env }}
+sections:
+  - parts:
+      - component: NewsWebPart
+      - text: Managed by {{ team }}
+```
+
+```
+formwork compile-pages pages/ formwork-discovery.json --out-dir build/ \
+    --vars shared.yaml --set env=Training
+```
+
+- `--vars FILE` is a YAML mapping of template variables, read with
+  `safe_load` only — a vars file is data, never code.
+- `--set NAME=VALUE` names one variable and overrides the vars file; repeat
+  it, and later pairs win. `compile`, `compile-pages` and `preview` all take
+  both flags.
+- A page's own `vars:` key, at column 0 and at most one per spec, names a
+  vars file relative to the spec file; it outranks the shared `--vars`.
+- Precedence, highest first: `--set` > the page's `vars:` file > the shared
+  `--vars`. A page vars file naming a key an explicit `--set` also names is
+  refused rather than silently losing the override.
+- Missing variables fail loudly. `StrictUndefined` means a name the template
+  uses but nobody supplies is a compile error naming the variable and the
+  template line, never an empty string baked into a page.
+- Values are substituted as text, not escaped: `&`, `<`, `>`, `"` and `'`
+  reach the spec verbatim, so a URL with a query string or a title with an
+  apostrophe is fine. `--set` refuses a value containing a newline (multi-line
+  values belong in the vars file), and every `--set` value is a string.
+- Refusals name the file, the position and the variable; a vars file's values
+  are never echoed into a message or into `formwork-pages.json`.
+
+When a compile used the template layer its provenance stamp records the vars
+file name and the SHA-256 of its bytes, a page's `ownVarsFile` and its
+SHA-256, and the sorted `--set` key names (`setKeys`) — never the values — so
+two payloads built from the same spec with different `--set` values are not
+stamp-identical.
 
 ### What compile refuses
 

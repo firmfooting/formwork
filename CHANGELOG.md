@@ -9,9 +9,10 @@ them to a GitHub release.
 
 ## Unreleased
 
-Distribution, gate breadth and CI security posture (M11), folded with the
-2026-09-08 adversarial review (Opus). No version bump yet; the next bump
-(0.7.0) will be the first to enjoy the golden version sentinel.
+Distribution, gate breadth and CI security posture (M11) and the M10
+spec-template layer, folded with the 2026-09-08 adversarial reviews (Opus).
+No version bump yet; the next bump (0.7.0) will be the first to enjoy the
+golden version sentinel.
 
 - CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows —
   each leg logs `python -VV` so the interpreter under test is evidence, not
@@ -37,6 +38,19 @@ Distribution, gate breadth and CI security posture (M11), folded with the
 - README install section points at GitHub release wheels — formwork is not
   on PyPI and the section no longer implies it is (review P1-3) — and the
   development commands are the uv ones CI runs.
+- Spec templates (M10): a spec file is rendered as a Jinja2 template before
+  the YAML parser sees it when the command carries `--vars`/`--set`, or the
+  spec carries a top-level `vars:` key; with no flags the bytes reach the
+  parser unchanged, so literal `{{ ... }}` in a plain spec keeps compiling.
+  Precedence `--set` > the page's `vars:` file > the shared `--vars`;
+  `StrictUndefined` refuses a missing variable by name; values are
+  substituted as text (`& < > " '` survive verbatim, `--set` refuses a
+  newline); refusals name files, positions and variables but never values.
+  The payload stamp grew `varsFile`/`varsSha256`/`ownVarsFile`/
+  `ownVarsSha256`/`setKeys` (names only, never values), so two payloads from
+  one spec with different `--set` values are no longer stamp-identical. The
+  M10 review's P2-7 asked for a README section and a changelog entry; both
+  land with this one.
 
 ## 0.6.0 — 2026-09-07
 
