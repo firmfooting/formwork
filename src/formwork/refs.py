@@ -84,6 +84,11 @@ class RewriteResult:
     #: ``instanceId`` of every control whose bytes were re-serialised, in
     #: canvas order; each appears once however many of its refs changed.
     rewritten: tuple[str, ...]
+    #: Human-readable notes for mirrors a render could not sync (new value
+    #: needs HTML escaping a plain-text mirror cannot carry verbatim). The
+    #: JSON values are written; the mirror keeps the source site's text, so
+    #: the operator must see it rather than a silent stale copy.
+    unresolved_extra: tuple[str, ...] = ()
 
 
 def _instance_id(control: Control) -> str:
@@ -223,7 +228,21 @@ def apply_plan(bundle: Bundle, plan: Plan) -> RewriteResult:
     """
     canvas = Canvas.parse(bundle.canvas_html or "")
     rewritten = apply_plan_to_canvas(canvas, plan)
-    return RewriteResult(canvas_html=canvas.render(), rewritten=rewritten)
+    rendered = canvas.render()
+    # A mirror the render could not sync (new value needs HTML escaping the
+    # plain-text mirror cannot carry verbatim) leaves the source site's text
+    # in the emitted page while the ref itself applied (review 2026-09-11
+    # P2-2 on #26). Render first, then read what it recorded, so the
+    # operator sees it instead of a silent stale copy; the JSON values are
+    # still written.
+    by_id = _controls_by_instance(canvas)
+    stale = tuple(
+        f"{instance} mirror {name} kept the source site's text: the new value"
+        " needs HTML escaping a plain-text mirror cannot carry"
+        for instance in rewritten
+        for name in by_id[instance].unsynced_mirrors
+    )
+    return RewriteResult(canvas_html=rendered, rewritten=rewritten, unresolved_extra=stale)
 
 
 def apply_plan_to_canvas(canvas: Canvas, plan: Plan) -> tuple[str, ...]:

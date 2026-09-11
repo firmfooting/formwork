@@ -258,10 +258,15 @@ def read_spec(
             # PyYAML's message embeds the offending source line — and this
             # source is RENDERED text, so that line carries a substituted
             # value into stderr and into formwork-pages.json. Report the
-            # position only (P1-4's sibling; spec_templates.load_vars).
+            # position only, and say so: a multi-line vars value shifts
+            # every later line, so "line 10" of a 7-line spec is honest
+            # only when the operator knows the number counts the rendered
+            # text (review 2026-09-11 P2-3).
             raise DslError(
                 f"{path.name}: template rendered to invalid YAML"
-                f"{yaml_error_position(exc)}"
+                f"{yaml_error_position(exc)} (position in the rendered"
+                " text, not the spec file: substituted multi-line values"
+                " shift the lines after them)"
             ) from None
     else:
         spec = yaml.safe_load(text)

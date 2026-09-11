@@ -102,6 +102,11 @@ def _cmd_process(args: argparse.Namespace) -> int:
             {"kind": r.kind, "location": r.location, "value": r.value}
             for r in plan.unresolved
         ],
+        # Mirrors the render could not sync (new value needs HTML escaping a
+        # plain-text mirror cannot carry verbatim): the JSON is new, the
+        # mirror keeps the source site's text. Reported, never silent
+        # (review 2026-09-11 P2-2 on #26).
+        "staleMirrors": list(result.unresolved_extra),
         # Version-bound, not web-bound: a copy is bound by its mapping, so the
         # apply guard runs its version check on this and skips the site check.
         PAYLOAD_KEY: process_stamp(Path(args.bundle).name),
@@ -115,6 +120,15 @@ def _cmd_process(args: argparse.Namespace) -> int:
         f"{len(plan.applied)} refs resolved, {len(result.rewritten)} control(s) rewritten, "
         f"{len(plan.unresolved)} unresolved)"
     )
+    if result.unresolved_extra:
+        print(
+            "stale mirrors (new value needs HTML escaping a plain-text mirror"
+            " cannot carry - the emitted page keeps the source site's text"
+            " there):",
+            file=sys.stderr,
+        )
+        for note in result.unresolved_extra:
+            print(f"  - {note}", file=sys.stderr)
     if plan.unresolved:
         print("unresolved site-bound values (left as extracted):", file=sys.stderr)
         for r in plan.unresolved:

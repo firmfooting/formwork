@@ -10,9 +10,10 @@ them to a GitHub release.
 ## Unreleased
 
 Distribution, gate breadth and CI security posture (M11) and the M10
-spec-template layer, folded with the 2026-09-08 adversarial reviews (Opus).
-No version bump yet; the next bump (0.7.0) will be the first to enjoy the
-golden version sentinel.
+spec-template layer, folded with the 2026-09-08 adversarial reviews (Opus),
+plus the 2026-09-11 swarm review (15 findings, issues #12-#26) folded with
+the 2026-09-11 integration review (Opus). No version bump yet; the next bump
+(0.7.0) will be the first to enjoy the golden version sentinel.
 
 - CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows —
   each leg logs `python -VV` so the interpreter under test is evidence, not
@@ -51,6 +52,51 @@ golden version sentinel.
   one spec with different `--set` values are no longer stamp-identical. The
   M10 review's P2-7 asked for a README section and a changelog entry; both
   land with this one.
+
+- The release build job installs its build frontend (`--with build==1.2.0`)
+  instead of calling a module that was never a dependency: every tag failed
+  with `No module named build` and the release job never ran (swarm #12, P1).
+- `findprobe`'s filename verdict no longer embeds the server-assigned slug,
+  which the server re-assigns on every create, so the row reports KEPT or
+  DIFFERS from run-independent fields only (swarm #16, P1).
+- A rendered spec whose YAML breaks no longer leaks substituted `--set`/vars
+  values into the refusal or the committed manifest (swarm #15, P1); the
+  position it names is the rendered text's, and says so (integration P2-3).
+- The apply guard keys the site check on the stamp's shape, so a compile
+  stamp that lost `discoveryWebId` is refused instead of silently creating on
+  another web (swarm #20, P1).
+- A path that cannot be read or written is one error line, exit 1 — and
+  inside `compile-pages` it fails that page alone instead of aborting the run
+  (swarm #14, P1).
+- Case-only payload-name collisions are refused: on Windows or default macOS
+  both pages wrote the same payload file and the second silently replaced the
+  first while the manifest reported two `ok` rows (swarm #13, P2).
+- An HTML text part whose href/src a browser resolves to a `javascript:` URL
+  (character reference, embedded tab or newline) is refused, closing the route
+  past the raw-text scan into the preview (swarm #21, P2).
+- The provenance stamp records a page's own `vars:` file
+  (`ownVarsFile`/`ownVarsSha256`) instead of attributing the canvas to the
+  shared `--vars` file or to nothing (swarm #17, P2).
+- `Catalogue.by_title` resolves a component from any preconfigured entry's
+  titles, not just the first, so `component: Document library` no longer
+  refuses with a false "run discover" (swarm #24, P2).
+- `process` refuses a web-part control carrying neither a web-part
+  `instanceId` nor a control-data `id`, instead of silently leaving its
+  site-bound values unrewritten and unreported (swarm #22, P2).
+- A rewritten control's `data-sp-htmlproperties` mirror now follows the new
+  value (swarm #26); a mirror whose new value needs HTML escaping the
+  plain-text mirror cannot carry is reported in the payload's `staleMirrors`
+  and on stderr rather than left stale in silence (integration P2-2).
+- The compiler refuses non-finite floats (`.inf`, `-.inf`) and non-string
+  `displayTitle` values, which reached the canvas as bare `Infinity` and made
+  `JSON.parse` reject the control data (swarm #25, P2).
+- Styled-text reliance detection accepts any attribute spelling (`STYLE=`,
+  `style =`, `CLASS=`, `<MARK>`), so a staleness warning is no longer dropped
+  because of casing (swarm #23, P3).
+- `tests/test_dsl.py` anchors its M5 fixture to the test file, so the suite
+  passes from any working directory (swarm #19, P2).
+- README documents the M10 templating surface and corrects the provenance
+  field list (swarm #18, P2).
 
 ## 0.6.0 — 2026-09-07
 

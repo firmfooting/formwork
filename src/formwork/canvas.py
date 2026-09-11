@@ -114,6 +114,11 @@ class Control:
     webpartdata_raw: str | None
     body: str = ""
     dirty: bool = field(default=False, repr=False)
+    # Mirror field names a render could not sync because the new value needs
+    # HTML escaping the mirror format cannot carry verbatim (review
+    # 2026-09-11 P2-2). Empty when every changed value was mirrored or the
+    # control has no mirror.
+    unsynced_mirrors: list[str] = field(default_factory=list, repr=False)
 
     @classmethod
     def web_part(cls, control_data: dict[str, Any], web_part_data: dict[str, Any]) -> "Control":
@@ -220,6 +225,11 @@ class Control:
             if value is None or match.group("text") != old_texts.get(match.group("name")):
                 return match.group(0)
             if any(character in value for character in "&<>"):
+                # The mirror is plain text: writing this value verbatim would
+                # need escaping whose exact form SharePoint derives, not
+                # copies (review 2026-09-11 P2-2). Leaving it stale in
+                # silence is the defect #26 was filed for, so report it.
+                self.unsynced_mirrors.append(match.group("name"))
                 return match.group(0)
             return f"{match.group(1)}{value}</div>"
 
