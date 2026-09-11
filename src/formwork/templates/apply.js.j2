@@ -12,7 +12,9 @@
 // v{{ version }}. To apply a payload on a web other than the one it was
 // compiled against, edit FORCE_SITE_MISMATCH below to true; the difference is
 // still printed. Nothing overrides the version check: a newer compile may rely
-// on a measurement this script does not carry.
+// on a measurement this script does not carry. The site check fails closed: a
+// compile stamp whose web id or URL is missing is refused, and only a process
+// stamp (which names no discovery at all) skips it.
 {% include "_prelude.js.j2" %}
 
   const PAGE_NAME = {{ name }};
@@ -67,13 +69,29 @@
     (typeof STAMP.spec === "string"
       ? "spec " + STAMP.spec + " compiled " + STAMP.compiledAt
       : "bundle " + STAMP.bundle + " processed " + STAMP.processedAt);
-  if (typeof STAMP.discoveryWebId === "string") {
-    // A compile stamp: bound to the discovery document's web.
+  // A stamp that names a discovery at all is a COMPILE stamp: it must bind to
+  // the web that discovery recorded. The discriminator is WHICH fields the
+  // stamp carries (compile writes discoverySha256, discoveryWebId,
+  // discoveryWebUrl, spec and compiledAt; process writes bundle and
+  // processedAt and none of those), never the TYPE of one of them. Keying the
+  // whole site check on `typeof STAMP.discoveryWebId === "string"` let a stamp
+  // that had lost that single field fall through to the process branch below,
+  // so the only check that binds a payload to its web was skipped in silence
+  // and the payload applied on any web. Fail closed: a compile stamp whose web
+  // id or URL is missing or not a string is a mismatch, not a pass.
+  const COMPILE_MARKERS = ["discoverySha256", "discoveryWebId", "discoveryWebUrl",
+    "spec", "compiledAt"];
+  const isCompileStamp = COMPILE_MARKERS.some((key) => typeof STAMP[key] === "string");
+  if (isCompileStamp) {
     const mismatches = [];
-    if (STAMP.discoveryWebId !== here.Id) {
+    if (typeof STAMP.discoveryWebId !== "string") {
+      mismatches.push("web id: the stamp carries none");
+    } else if (STAMP.discoveryWebId !== here.Id) {
       mismatches.push("web id: stamp " + STAMP.discoveryWebId + ", this web " + here.Id);
     }
-    if (STAMP.discoveryWebUrl !== hereUrl) {
+    if (typeof STAMP.discoveryWebUrl !== "string") {
+      mismatches.push("web url: the stamp carries none");
+    } else if (STAMP.discoveryWebUrl !== hereUrl) {
       mismatches.push("web url: stamp " + STAMP.discoveryWebUrl + ", this web " + hereUrl);
     }
     if (mismatches.length && !FORCE_SITE_MISMATCH) {
@@ -92,12 +110,22 @@
       console.log("[formwork] provenance OK:", stampOrigin,
         "| web " + here.Id + " at " + hereUrl + " matches the stamp");
     }
-  } else {
-    // A process stamp: a copied page is bound to its mapping, not to a
+  } else if (typeof STAMP.bundle === "string") {
+    // The documented process stamp (formwork process writes version, bundle
+    // and processedAt): a copied page is bound to its mapping, not to a
     // discovery document, so there is no web to compare and the site check
     // does not apply. The version check above did.
     console.log("[formwork] provenance:", stampOrigin,
       "| no discovery binding (process payload): site check not applicable");
+  } else {
+    // Neither shape: the stamp names no discovery field and no bundle, so it is
+    // not the process stamp the site check may skip and nothing says which web
+    // the payload belongs to. Refuse rather than apply it unbound.
+    throw new Error(
+      "provenance: the payload's stamp (" + stampOrigin + ") names neither a discovery " +
+      "document nor a bundle, so nothing binds it to a web. Nothing was created. Recompile " +
+      "it (formwork compile or compile-pages), or re-run formwork process."
+    );
   }
 
   // 1. Create the page through the sitepages API. PromotedState travels IN
