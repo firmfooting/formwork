@@ -52,10 +52,13 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: false
-      - name: Install the pinned build tool
-        run: uv tool install --from build build
-      - name: Build wheel and sdist with the locked toolchain
-        run: uv run --locked --no-sync python -m build
+      # The build frontend is NOT a project dependency, and this job never
+      # runs `uv sync`, so it must be injected into the run environment
+      # explicitly. `--with` supplies it (pinned, so the artifact's
+      # provenance does not float); `uv tool install` alone only put a
+      # `pyproject-build` binary on PATH that nothing ever invoked.
+      - name: Build wheel and sdist with the pinned build frontend
+        run: uv run --locked --no-sync --with "build==1.6.1" python -m build
         env:
           UV_NO_CACHE: "1"
       - name: The wheel must ship every template (a wheel without them renders nothing)
