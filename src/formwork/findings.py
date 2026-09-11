@@ -91,8 +91,12 @@ FACTOR_CHECK_IDS: dict[tuple[int, ...], str] = {
 }
 
 #: Text whose HTML carries styling relies on the styled-text row as well as
-#: the colon rewrite: an inline style, a class, or a <mark>.
-_STYLED_TEXT_RE = re.compile(r"\bstyle=|\bclass=|<mark\b")
+#: the colon rewrite: an inline style, a class, or a <mark>. HTML tag and
+#: attribute names are case-insensitive and '=' may carry spaces around it
+#: (text.py:_HTML_REFUSED), and an HTML part is passed through as written, so
+#: the match ignores case and whitespace — otherwise a part that spells its
+#: styling ``STYLE=`` or ``style =`` would silently skip the styled-text row.
+_STYLED_TEXT_RE = re.compile(r"\bstyle\s*=|\bclass\s*=|<mark\b", re.IGNORECASE)
 
 
 class FindingsError(ValueError):

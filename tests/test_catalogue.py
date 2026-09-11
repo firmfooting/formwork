@@ -19,7 +19,9 @@ import copy
 import json
 import pathlib
 
-from formwork.canvas import escape_attribute
+import pytest
+
+from formwork.canvas import Canvas, escape_attribute
 from formwork.catalogue import (
     Catalogue,
     LayoutVariant,
@@ -29,6 +31,7 @@ from formwork.catalogue import (
     PropertySample,
     parse_discovery,
 )
+from formwork.dsl import compile_page
 from test_dsl import DISCOVERY
 
 
@@ -634,3 +637,65 @@ class TestPageState:
         assert (sample.ok, sample.recycled) == (False, None)
         assert sample.requested == {}
         assert sample.reason == ""
+
+
+def measured_discovery() -> dict:
+    """The live M5 document (2026-09-07): the one with two titled entries."""
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "discovery.m5.json"
+    return json.loads(fixture.read_text(encoding="utf-8"))
+
+
+class TestEntryTitles:
+    """A manifest's preconfigured entries are the picker's variants.
+
+    The live catalogue carries one component with more than one titled entry:
+    ListWebPart, ``"List"`` (entry 0) and ``"Document library"`` (entry 1).
+    The M5 probe placed entry 1 and SharePoint stored it as
+    ``title: "Document library"`` with ``isDocumentLibrary: true``
+    (``listBindings.requested[0]`` carries ``entry: 1``;
+    ``listBindings.persisted[0]`` is the stored block). The catalogue carried
+    both entries in ``entry_titles``/``entry_properties``, but the title
+    lookup read only entry 0's, so ``component: Document library`` refused as
+    "not placeable on this site" while the document declared the title.
+    """
+
+    def test_a_later_entry_title_resolves_to_that_entry(self):
+        part = parse_discovery(measured_discovery()).by_title("Document library")
+        assert (part.alias, part.title) == ("ListWebPart", "Document library")
+        assert part.default_properties == {"isDocumentLibrary": True, "filterBy": {}}
+
+    def test_the_first_entry_keeps_its_own_title_and_defaults(self):
+        part = parse_discovery(measured_discovery()).by_title("List")
+        assert (part.alias, part.title) == ("ListWebPart", "List")
+        assert part.default_properties == {"isDocumentLibrary": False, "filterBy": {}}
+
+    def test_the_alias_still_names_the_first_entry(self):
+        part = parse_discovery(measured_discovery()).by_alias("ListWebPart")
+        assert (part.title, part.default_properties["isDocumentLibrary"]) == ("List", False)
+        assert part.entry_count() == 2
+
+    def test_a_title_no_entry_carries_still_refuses(self):
+        with pytest.raises(KeyError) as caught:
+            parse_discovery(measured_discovery()).by_title("Document libraries")
+        assert "not in catalogue" in str(caught.value)
+
+    def test_the_picker_s_title_compiles_to_the_stored_properties(self):
+        """End to end: the title the picker shows reaches the control.
+
+        The stored block for the probe's entry-1 placement carries
+        ``isDocumentLibrary: true``; a spec naming that entry by the title
+        the picker showed compiles to the same measured pair rather than
+        entry 0's.
+        """
+        cat = parse_discovery(measured_discovery())
+        spec = {
+            "page": "T",
+            "sections": [{"type": "one", "parts": [{"component": "Document library"}]}],
+        }
+        result = compile_page(spec, cat)
+        control = Canvas.parse(result.canvas).controls[0]
+        assert control.web_part_data["title"] == "Document library"
+        assert control.web_part_data["properties"] == {
+            "isDocumentLibrary": True,
+            "filterBy": {},
+        }

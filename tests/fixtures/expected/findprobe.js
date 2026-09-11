@@ -296,7 +296,7 @@
       "checkId": "page.page-state.filename-slug",
       "lane": "findprobe",
       "measured": "2026-09-06",
-      "result": "explicit: ignored (stored d0i8msje.aspx); slug-needing: ignored (stored b1xk6f0f.aspx)"
+      "result": "explicit: ignored (server-assigned name); slug-needing: ignored (server-assigned name)"
     },
     {
       "checkId": "page.page-state.description-banner",
@@ -1515,7 +1515,13 @@
     return node === undefined ? fallback : String(node);
   };
   // filename-slug: did the server keep the requested FileName? Compare the
-  // requested name with the stored one — run-independent by construction.
+  // requested name with the stored one, and name only the measured OUTCOME:
+  // the stored name is itself server-assigned and volatile (a fresh
+  // eight-character slug on every create of the Home layout apply uses —
+  // page.page-state.filename-slug, FINDINGS.md:53), so quoting it would make
+  // this verdict read DIFFERS on every re-run of a row that still holds.
+  // The stored name stays in the evidence
+  // (pageState.samples[].persisted.created.fields.FileName).
   const fileNameKept = label => {
     const s = psByLabel[label];
     if (!s) return "no sample";
@@ -1523,7 +1529,8 @@
       ? s.requested.create.FileName : null;
     const got = psField(label, "created.fields.FileName", null)
       || psField(label, "read.page.fields.FileName", null);
-    return wanted && got ? (got === wanted ? "kept" : "ignored (stored " + got + ")")
+    return wanted && got
+      ? (got === wanted ? "kept" : "ignored (server-assigned name)")
       : "no read";
   };
   verdicts["page.page-state.filename-slug"] =

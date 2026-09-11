@@ -12,6 +12,7 @@ documentation cannot drift from the command.
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import re
 
@@ -203,6 +204,33 @@ class TestCompilePages:
         assert not by_stem["list"].ok
         assert "mapping" in (by_stem["list"].error or "")
 
+    def test_a_spec_that_cannot_be_opened_fails_alone_too(self, tmp_path):
+        # Opening the file is part of reading the spec: a permission error
+        # is this page's row, not the run's traceback, so the other
+        # payloads and the manifest are still written (M7 per-page
+        # isolation).
+        if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            pytest.skip("this platform cannot express an unreadable spec file")
+        discovery = write_discovery(tmp_path)
+        pages = write_specs(tmp_path, home=HOME)
+        locked = pages / "locked.yaml"
+        locked.write_text(HOME, encoding="utf-8")
+        locked.chmod(0)
+        try:
+            manifest = compile_pages(find_specs(str(pages)), discovery, tmp_path / "build")
+        finally:
+            locked.chmod(0o644)
+        by_stem = {r.stem: r for r in manifest.results}
+        assert by_stem["home"].ok
+        assert not by_stem["locked"].ok
+        assert "cannot read" in (by_stem["locked"].error or "")
+        assert by_stem["locked"].payload_path is None
+        assert (tmp_path / "build" / "home.payload.json").exists()
+        written = json.loads(
+            (tmp_path / "build" / MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+        assert [p["spec"] for p in written["pages"] if not p["ok"]] == ["locked.yaml"]
+
     def test_every_page_shares_the_one_discovery(self, tmp_path):
         discovery = write_discovery(tmp_path)
         pages = write_specs(tmp_path, home=HOME, news=NEWS)
@@ -235,6 +263,38 @@ class TestCompilePages:
         b = write_specs(tmp_path / "b", home=NEWS)
         with pytest.raises(ValueError, match=r"share the payload name home\.payload\.json"):
             compile_pages([a / "home.yaml", b / "home.yaml"], discovery, tmp_path / "build")
+        assert not (tmp_path / "build").exists()
+
+    def test_case_variant_stems_refuse_before_writing(self, tmp_path):
+        # Windows and default macOS filesystems are case-insensitive, so
+        # Home.payload.json and home.payload.json are ONE file there: a
+        # case-only difference is a collision too, and an exact-match guard
+        # let the second spec silently replace the first spec's payload
+        # while the manifest reported two ok rows (swarm review 2026-09-11).
+        discovery = write_discovery(tmp_path)
+        a = write_specs(tmp_path / "a", Home=HOME)
+        b = write_specs(tmp_path / "b", home=NEWS)
+        with pytest.raises(ValueError) as raised:
+            compile_pages(
+                [a / "pages" / "Home.yaml", b / "pages" / "home.yaml"],
+                discovery,
+                tmp_path / "build",
+            )
+        message = str(raised.value)
+        assert "share the payload name home.payload.json" in message
+        assert "case-only difference from Home.yaml" in message
+        assert not (tmp_path / "build").exists()
+
+    def test_case_variant_stems_in_one_glob_refuse_too(self, tmp_path):
+        # The same hole through the command's own discovery path: a glob
+        # spanning two directories whose stems differ only by case.
+        discovery = write_discovery(tmp_path)
+        write_specs(tmp_path / "a", Home=HOME)
+        write_specs(tmp_path / "b", home=NEWS)
+        specs = find_specs(str(tmp_path / "*" / "pages" / "*.yaml"))
+        assert [s.name for s in specs] == ["Home.yaml", "home.yaml"]
+        with pytest.raises(ValueError, match=r"share the payload name home\.payload\.json"):
+            compile_pages(specs, discovery, tmp_path / "build")
         assert not (tmp_path / "build").exists()
 
     def test_the_manifest_records_stale_findings_per_page(self, tmp_path):
@@ -325,6 +385,30 @@ class TestCompilePagesCommand:
         assert lines[2] == "  ok    home.yaml -> home.payload.json (Team home, 2 parts)"
         assert (out / "home.payload.json").exists()
         assert captured.err == ""
+
+    def test_an_unreadable_spec_is_reported_not_a_traceback(self, tmp_path, capsys):
+        # The command's own contract: a page fails with its reason on its
+        # row, the rest still build, the manifest is written, exit 1.
+        if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            pytest.skip("this platform cannot express an unreadable spec file")
+        discovery = write_discovery(tmp_path)
+        pages = write_specs(tmp_path, home=HOME)
+        locked = pages / "locked.yaml"
+        locked.write_text(HOME, encoding="utf-8")
+        locked.chmod(0)
+        out = tmp_path / "build"
+        try:
+            rc = main(["compile-pages", str(pages), str(discovery), "--out-dir", str(out)])
+        finally:
+            locked.chmod(0o644)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert captured.err == ""
+        lines = captured.out.splitlines()
+        assert lines[1] == "  ok    home.yaml -> home.payload.json (Team home, 2 parts)"
+        assert lines[2].startswith("  FAIL  locked.yaml: cannot read: ")
+        assert (out / MANIFEST_NAME).exists()
 
     def test_a_glob_argument_works_the_same(self, tmp_path, capsys):
         discovery = write_discovery(tmp_path)

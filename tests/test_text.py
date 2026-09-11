@@ -173,6 +173,33 @@ class TestHtmlRefusals:
         with pytest.raises(TextError):
             text_to_html(body)
 
+    @pytest.mark.parametrize("body", [
+        '<a href="javascript&#58;alert(1)">x</a>',
+        '<a href="jav&#x61;script:alert(1)">x</a>',
+        '<a href="java\nscript:alert(1)">x</a>',
+        '<a href="java\tscript:alert(1)">x</a>',
+        '<a href="javascript&NewLine;:alert(1)">x</a>',
+        '<a href="data&#58;text/html,<b>x</b>">x</a>',
+        '<img src=vbscript&#58;x>',
+    ])
+    def test_an_obfuscated_script_url_is_refused(self, body):
+        """The raw spelling hides the scheme from the line scan, but a browser
+        decodes a value's character references and drops tab/newline in the
+        URL, so it resolves to the javascript:/data:/vbscript: URL refused
+        above. (Review 2026-09-11: the raw scan alone let these through.)"""
+        with pytest.raises(TextError, match="not supported"):
+            text_to_html(body)
+
+    @pytest.mark.parametrize("body", [
+        "<p>write &lt;script&gt; to mean the element</p>",
+        '<a href="https://x/?a=1&amp;b=2">q</a>',
+        '<p>&amp;#58; is not a colon</p>',
+    ])
+    def test_escaped_markup_and_text_are_still_legal(self, body):
+        """Only attribute VALUES are decoded by the browser; escaped markup in
+        text is text, so the resolved-URL check must not refuse it."""
+        assert text_to_html(body, "html") == body
+
     def test_control_characters_are_refused_before_format_detection(self):
         with pytest.raises(TextError, match="control characters"):
             text_to_html("ok\x005\x00 text")

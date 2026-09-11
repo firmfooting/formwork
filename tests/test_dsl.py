@@ -3,9 +3,11 @@
 import copy
 import html
 import json
+import pathlib
 import re
 
 import pytest
+import yaml
 
 from formwork.canvas import Canvas, escape_attribute
 from formwork.catalogue import Catalogue, parse_discovery
@@ -16,6 +18,11 @@ from formwork.dsl import (
     compile_page,
     stored_text_html,
 )
+
+#: Fixtures and repo root, anchored to this file rather than the process
+#: working directory, so the suite runs from anywhere (see ``_m5_doc``).
+ROOT = pathlib.Path(__file__).parent.parent
+M5_FIXTURE = ROOT / "tests" / "fixtures" / "discovery.m5.json"
 
 
 # A synthetic discovery document in the wire shape the discover script emits.
@@ -478,6 +485,37 @@ class TestCompilePage:
         with pytest.raises(DslError, match="hidden"):
             compile_page(spec, cat)
 
+    @pytest.mark.parametrize("bad", [123, 1.5, True, ["What's on"], {"a": 1}, float("inf")])
+    def test_display_title_must_be_a_string(self, bad):
+        # displayTitle becomes the canvas web part data's ``title``, which
+        # every persisted canvas carries as a JSON string
+        # (tests/fixtures/collabhome.canvas.html). A number, array or
+        # non-finite float would be written there verbatim instead of
+        # refusing — the same hole the properties allow-list closes.
+        cat = parse_discovery(DISCOVERY)
+        spec = {
+            "page": "X",
+            "sections": [
+                {"type": "one", "parts": [{"component": "NewsWebPart", "displayTitle": bad}]}
+            ],
+        }
+        with pytest.raises(DslError, match="displayTitle"):
+            compile_page(spec, cat)
+
+    def test_display_title_string_still_reaches_the_canvas(self):
+        cat = parse_discovery(DISCOVERY)
+        spec = {
+            "page": "X",
+            "sections": [
+                {
+                    "type": "one",
+                    "parts": [{"component": "NewsWebPart", "displayTitle": "What's on"}],
+                }
+            ],
+        }
+        canvas = Canvas.parse(compile_page(spec, cat).canvas)
+        assert canvas.web_part_controls()[0].web_part_title == "What's on"
+
     def test_section_factors_follow_sharepoint_model(self):
         cat = parse_discovery(DISCOVERY)
         spec = {
@@ -772,6 +810,36 @@ class TestProperties:
         control = self.control({"component": "NewsWebPart", "properties": {"q": 1}})
         assert control.web_part_data["properties"]["q"] == 1
 
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+    def test_non_finite_floats_refuse(self, bad):
+        # The allow-list above promises "JSON-serialisable scalars only", and
+        # json.dumps writes a non-finite float as the bare token
+        # Infinity/-Infinity/NaN, which is not JSON at all — the page's own
+        # read of the control data is a JSON.parse over data-sp-controldata,
+        # so such a value cannot be read back. NaN was refused; Infinity
+        # reached the canvas as `Infinity` until this test.
+        with pytest.raises(DslError, match="not JSON-serialisable"):
+            self.control(
+                {"component": "NewsWebPart", "properties": {"threshold": bad}},
+            )
+
+    def test_the_reachable_yaml_infinity_literal_refuses(self):
+        # The spelling a spec actually reaches inf through: YAML 1.1 resolves
+        # the plain scalar `.inf` (and `.Inf`/`.INF`/`!!float 1e999`) to a
+        # non-finite float, so `properties: {threshold: .inf}` arrives as
+        # float('inf') and must refuse like the .nan spelling does.
+        spec = yaml.safe_load(
+            "page: T\n"
+            "sections:\n"
+            "  - type: one\n"
+            "    parts:\n"
+            "      - component: NewsWebPart\n"
+            "        properties:\n"
+            "          threshold: .inf\n"
+        )
+        with pytest.raises(DslError, match="not JSON-serialisable"):
+            compile_page(spec, parse_discovery(DISCOVERY))
+
 
 class TestSectionColumns:
     """``columns:`` on a section (M5-DSL).
@@ -953,8 +1021,10 @@ class TestBind:
 
 
 def _m5_doc() -> dict:
-    with open("tests/fixtures/discovery.m5.json", encoding="utf-8") as fh:
-        return json.load(fh)
+    # Anchored to this file, not the process working directory: the previous
+    # ``open("tests/fixtures/...")`` errored with FileNotFoundError for any
+    # invocation that did not happen to run from the repository root.
+    return json.loads(M5_FIXTURE.read_text(encoding="utf-8"))
 
 
 class TestBindAgainstMeasuredFixture:

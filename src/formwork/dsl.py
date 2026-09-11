@@ -20,7 +20,7 @@ lives in :mod:`formwork.sections`, which :mod:`formwork.catalogue` shares.
 import re
 import warnings
 from dataclasses import dataclass
-from math import isnan
+from math import isfinite
 from typing import Any
 
 from .canvas import COLON_ENTITY, Canvas, Control
@@ -200,9 +200,19 @@ def _flat_scalars(properties: Any, ordinal: int) -> dict[str, Any]:
                 " non-JSON scalars (YAML dates, binaries) are refused. Quote"
                 " dates as strings if the property takes one."
             )
-        if isinstance(value, float) and isnan(value):
+        if isinstance(value, float) and not isfinite(value):
+            # The 2026-09-07 review asked for the whole non-finite class, not
+            # just NaN: json.dumps writes either as a bare token —
+            # NaN/Infinity/-Infinity — which is not JSON, and the canvas
+            # attributes are read back with a JSON.parse (canvas.py's
+            # decode_attribute path; the discover probe does the same with
+            # DOMParser). `Infinity` reached data-sp-webpartdata until this
+            # check.
             raise DslError(
-                f"part {ordinal}: properties.{name}: NaN is not JSON-serialisable"
+                f"part {ordinal}: properties.{name}: {value!r} is not"
+                " JSON-serialisable — json.dumps writes a non-finite float as the"
+                " bare token NaN/Infinity, which JSON.parse (the page's own read of"
+                " the control data) rejects. Use a finite number."
             )
     return dict(properties)
 
@@ -448,6 +458,19 @@ def section_tree(spec: dict[str, Any]) -> tuple[Section, ...]:
                     f"{s_index} has {len(factors)} column(s)"
                 )
             kind = _part_kind(part, ordinal)
+            # A part's displayTitle becomes the canvas web part data's title
+            # (dsl.py:_control_for, parts_out and preview.py all read it), and
+            # every title the persisted canvases carry is a JSON string
+            # (tests/fixtures/collabhome.canvas.html). A non-string would go
+            # into the canvas as a number or array — and a non-finite float
+            # as the bare token Infinity, which is not JSON at all.
+            display = part.get("displayTitle")
+            if display is not None and not isinstance(display, str):
+                raise DslError(
+                    f"part {ordinal}: 'displayTitle' must be a string (it is the"
+                    " title the page shows); got"
+                    f" {type(display).__name__}"
+                )
             by_column[column - 1].append(
                 Placement(
                     ordinal=ordinal,

@@ -47,8 +47,9 @@ def load_vars(path: Path | str) -> dict[str, Any]:
     except yaml.YAMLError as exc:
         # Report position, never the offending line: PyYAML's message
         # embeds the source line, and a vars file routinely carries
-        # values that must not reach stderr or the manifest (P1-4).
-        where = _yaml_mark(exc)
+        # values that must not reach stderr or the manifest (P1-4); the
+        # same rule is reused wherever rendered text meets the parser.
+        where = yaml_error_position(exc)
         raise DslError(f"{file}: invalid YAML in vars file{where}") from None
     if data is None:
         return {}
@@ -122,8 +123,14 @@ def resolve_variables(
     return variables
 
 
-def _yaml_mark(exc: yaml.YAMLError) -> str:
-    """", line N, column M" from the problem mark, or "" when absent."""
+def yaml_error_position(exc: yaml.YAMLError) -> str:
+    """``", line N, column M" from the problem mark, or ``""`` when absent.
+
+    PyYAML's own message embeds the offending SOURCE LINE. For a vars file
+    that line is a value; for a rendered spec it is a line VALUES were
+    substituted into. A refusal reports the position and never the text
+    (P1-4; the rendered-spec path is its sibling).
+    """
     mark = getattr(exc, "problem_mark", None)
     if mark is None:
         return ""

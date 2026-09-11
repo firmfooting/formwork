@@ -29,7 +29,14 @@ from .generator import (
     generate_extract_script,
     generate_findprobe_script,
 )
-from .multipage import PageOptions, TemplateVars, compile_pages, find_specs, read_spec
+from .multipage import (
+    PageOptions,
+    TemplateVars,
+    compile_pages,
+    find_specs,
+    page_vars_path,
+    read_spec,
+)
 from .preview import build_preview, render_preview
 from .provenance import (
     PAYLOAD_KEY,
@@ -95,6 +102,11 @@ def _cmd_process(args: argparse.Namespace) -> int:
             {"kind": r.kind, "location": r.location, "value": r.value}
             for r in plan.unresolved
         ],
+        # Mirrors the render could not sync (new value needs HTML escaping a
+        # plain-text mirror cannot carry verbatim): the JSON is new, the
+        # mirror keeps the source site's text. Reported, never silent
+        # (review 2026-09-11 P2-2 on #26).
+        "staleMirrors": list(result.unresolved_extra),
         # Version-bound, not web-bound: a copy is bound by its mapping, so the
         # apply guard runs its version check on this and skips the site check.
         PAYLOAD_KEY: process_stamp(Path(args.bundle).name),
@@ -108,6 +120,15 @@ def _cmd_process(args: argparse.Namespace) -> int:
         f"{len(plan.applied)} refs resolved, {len(result.rewritten)} control(s) rewritten, "
         f"{len(plan.unresolved)} unresolved)"
     )
+    if result.unresolved_extra:
+        print(
+            "stale mirrors (new value needs HTML escaping a plain-text mirror"
+            " cannot carry - the emitted page keeps the source site's text"
+            " there):",
+            file=sys.stderr,
+        )
+        for note in result.unresolved_extra:
+            print(f"  - {note}", file=sys.stderr)
     if plan.unresolved:
         print("unresolved site-bound values (left as extracted):", file=sys.stderr)
         for r in plan.unresolved:
@@ -215,7 +236,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         provenance(discovery_bytes, discovery),
         Path(args.spec).name,
         template=template_provenance(
-            getattr(args, "vars", None), getattr(args, "set", None)
+            getattr(args, "vars", None),
+            getattr(args, "set", None),
+            own_vars_path=page_vars_path(Path(args.spec)),
         ),
     )
     payload = {
@@ -491,6 +514,16 @@ def main(argv: list[str] | None = None) -> int:
         result: int = args.func(args)
     except (DslError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # A path that cannot be read or written is a refusal too: a mistyped
+        # spec, bundle, discovery, mapping or payload file, a --out whose
+        # directory does not exist, a permission. load_vars already answers a
+        # missing vars file this way (P2-1); the primary inputs answer the
+        # same, with Python's own wording, which names the path and the
+        # reason.
+        where = f": {exc.filename}" if exc.filename else ""
+        print(f"error: {exc.strerror or exc}{where}", file=sys.stderr)
         return 1
     return result
 

@@ -187,6 +187,22 @@ class TestReadSpec:
         with pytest.raises(DslError, match="cannot read vars file"):
             read_spec(p, TemplateVars())
 
+    def test_a_rendered_spec_that_breaks_yaml_never_echoes_the_value(self, tmp_path):
+        # P1-4's sibling: here the line PyYAML reports is RENDERED text, so
+        # its snippet carries the substituted value. The refusal must name
+        # the file and the position and nothing else.
+        p = _write(
+            tmp_path,
+            "spec.yaml",
+            "title: t\nsections:\n  - parts:\n      - text: {{ msg }}\n",
+        )
+        with pytest.raises(DslError) as excinfo:
+            read_spec(p, TemplateVars(set_pairs=[f"msg={SECRET}: breaks"]))
+        message = str(excinfo.value)
+        assert "invalid YAML" in message
+        assert "line" in message
+        assert SECRET not in message
+
 
 class TestCompilePagesCli:
     """The end-to-end layer P1-1/P1-2 shipped without."""
@@ -272,6 +288,27 @@ class TestCompilePagesCli:
         assert SECRET not in on_disk
         assert SECRET not in (result.error or "")
 
+    def test_a_rendered_spec_that_breaks_yaml_puts_no_value_in_the_manifest(self, tmp_path):
+        # The sibling of the vars-file pin above, on the render path: the
+        # failing line is rendered text, so its snippet carries a value.
+        pages = _write(
+            tmp_path,
+            "a.yaml",
+            "title: t\nsections:\n  - parts:\n      - text: {{ msg }}\n",
+        )
+        out = tmp_path / "build"
+        manifest = compile_pages(
+            find_specs(str(pages)),
+            self._discovery(tmp_path, with_text=True),
+            out,
+            PageOptions(template_vars=TemplateVars(set_pairs=[f"msg={SECRET}: breaks"])),
+        )
+        (result,) = manifest.results
+        assert not result.ok
+        assert SECRET not in (result.error or "")
+        on_disk = (out / "formwork-pages.json").read_text(encoding="utf-8")
+        assert SECRET not in on_disk
+
     def test_the_stamp_records_the_template_layer_without_values(self, tmp_path):
         vars_file = _write(tmp_path, "vars.yaml", "env: prod\n")
         pages = _write(
@@ -295,6 +332,56 @@ class TestCompilePagesCli:
         assert len(stamp["varsSha256"]) == 64
         assert stamp["setKeys"] == "flag"
         assert "prod" not in json.dumps(stamp)
+
+    def test_the_stamp_records_a_page_own_vars_file_with_no_flags(self, tmp_path):
+        # M10 P2-5: a page rendered from its own ``vars:`` file must be
+        # stamped with that file, not left looking untemplated.
+        _write(tmp_path, "own.yaml", "env: page-local\n")
+        pages = _write(
+            tmp_path,
+            "a.yaml",
+            "vars: own.yaml\ntitle: {{ env }}\nsections:\n  - parts:\n      - text: hi\n",
+        )
+        out = tmp_path / "build"
+        manifest = compile_pages(
+            find_specs(str(pages)), self._discovery(tmp_path, with_text=True), out
+        )
+        (result,) = manifest.results
+        assert result.ok, result.error
+        payload = json.loads((out / "a.payload.json").read_text(encoding="utf-8"))
+        assert payload["title"] == "page-local"
+        stamp = payload["provenance"]
+        assert stamp["ownVarsFile"] == "own.yaml"
+        assert len(stamp["ownVarsSha256"]) == 64
+        assert stamp["varsFile"] == ""
+        assert "page-local" not in json.dumps(stamp)
+
+    def test_the_stamp_names_the_page_vars_file_beside_shared_vars(self, tmp_path):
+        # P2-5 misattribution: with --vars AND a page ``vars:`` file the
+        # page file wins at render time, so a stamp naming only the shared
+        # file would describe a file that did not produce the content.
+        shared = _write(tmp_path, "vars.yaml", "env: shared\n")
+        _write(tmp_path, "own.yaml", "env: page-local\n")
+        pages = _write(
+            tmp_path,
+            "a.yaml",
+            "vars: own.yaml\ntitle: {{ env }}\nsections:\n  - parts:\n      - text: hi\n",
+        )
+        out = tmp_path / "build"
+        manifest = compile_pages(
+            find_specs(str(pages)),
+            self._discovery(tmp_path, with_text=True),
+            out,
+            PageOptions(template_vars=TemplateVars(vars_path=str(shared))),
+        )
+        (result,) = manifest.results
+        assert result.ok, result.error
+        payload = json.loads((out / "a.payload.json").read_text(encoding="utf-8"))
+        assert payload["title"] == "page-local"  # the page file won
+        stamp = payload["provenance"]
+        assert stamp["varsFile"] == "vars.yaml"
+        assert stamp["ownVarsFile"] == "own.yaml"
+        assert stamp["varsSha256"] != stamp["ownVarsSha256"]
 
 
 class TestCompileCli:

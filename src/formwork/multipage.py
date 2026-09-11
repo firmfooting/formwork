@@ -59,10 +59,10 @@ from .provenance import (
     template_provenance,
 )
 from .spec_templates import (
-    _first_line,
     load_vars,
     parse_set_overrides,
     resolve_variables,
+    yaml_error_position,
 )
 from .spec_templates import (
     render_spec_text as render_spec,
@@ -164,6 +164,35 @@ def payload_name(spec_path: Path) -> str:
     return f"{spec_path.stem}.payload.json"
 
 
+_VARS_KEY = re.compile(r"^vars:[ \t]*([^\n#]*?)[ \t]*(?:#.*)?$", re.MULTILINE)
+
+
+def page_vars_name(text: str, path: Path) -> str | None:
+    """The page-local ``vars:`` file a spec's ``text`` names, as written.
+
+    The one line-anchored discovery :func:`read_spec` uses (``re.match``
+    with ``(?m)`` never matched past line 1, review P1-5), refusing
+    ambiguity: more than one top-level ``vars:`` key is a spec error, not
+    a silent pick. Exposed so the payload stamp can record the same file
+    the page actually rendered from (M10 P2-5).
+    """
+    matches = _VARS_KEY.findall(text)
+    if len(matches) > 1:
+        raise DslError(f"{path.name}: more than one top-level 'vars:' key; keep one")
+    return matches[0].strip().strip("'\"") if matches else None
+
+
+def page_vars_path(path: Path) -> Path | None:
+    """The resolved page-local ``vars:`` file a spec names, or ``None``.
+
+    ``read_spec`` has already loaded and validated it by the time a stamp
+    is built, so a caller reaches this only for a spec that read cleanly.
+    """
+    path = Path(path)
+    own = page_vars_name(path.read_text(encoding="utf-8"), path)
+    return (path.parent / own).resolve() if own is not None else None
+
+
 def read_spec(
     path: Path,
     template_vars: TemplateVars | None = None,
@@ -199,15 +228,9 @@ def read_spec(
     text = Path(path).read_text(encoding="utf-8")
     # A page's own ``vars:`` key has to be findable BEFORE rendering — the
     # template text does not parse as YAML while {{ }} placeholders are in
-    # it. Line-anchored search (re.match + (?m) never matched past line 1,
-    # review P1-5), refusing ambiguity: more than one top-level vars key
-    # is a spec error, not a silent pick.
-    matches = re.findall(r"^vars:[ \t]*([^\n#]*?)[ \t]*(?:#.*)?$", text, re.MULTILINE)
-    if len(matches) > 1:
-        raise DslError(
-            f"{path.name}: more than one top-level 'vars:' key; keep one"
-        )
-    own = matches[0].strip().strip("'\"") if matches else None
+    # it. The discovery is shared with the payload stamp, which records the
+    # file this page renders from (:func:`page_vars_name`).
+    own = page_vars_name(text, path)
     variables: dict[str, Any] = dict(shared_vars or {})
     if own is not None:
         own_path = (path.parent / own).resolve()
@@ -232,9 +255,18 @@ def read_spec(
         try:
             spec = yaml.safe_load(rendered)
         except yaml.YAMLError as exc:
-            where = _first_line(exc)
+            # PyYAML's message embeds the offending source line — and this
+            # source is RENDERED text, so that line carries a substituted
+            # value into stderr and into formwork-pages.json. Report the
+            # position only, and say so: a multi-line vars value shifts
+            # every later line, so "line 10" of a 7-line spec is honest
+            # only when the operator knows the number counts the rendered
+            # text (review 2026-09-11 P2-3).
             raise DslError(
-                f"{path.name}: template rendered to invalid YAML ({where})"
+                f"{path.name}: template rendered to invalid YAML"
+                f"{yaml_error_position(exc)} (position in the rendered"
+                " text, not the spec file: substituted multi-line values"
+                " shift the lines after them)"
             ) from None
     else:
         spec = yaml.safe_load(text)
@@ -255,18 +287,33 @@ def compile_pages(
     """Compile every spec against the one discovery document into ``out_dir``.
 
     Refuses before writing anything when two specs would share a payload
-    name (same stem in different directories); otherwise every spec gets a
-    row, the failures alongside the successes.
+    name (same stem in different directories, ignoring case — Windows and
+    default macOS filesystems are case-insensitive, so two names that differ
+    only by case are ONE file there); otherwise every spec gets a row, the
+    failures alongside the successes.
     """
     specs = [Path(p) for p in spec_paths]
     seen: dict[str, Path] = {}
     for spec_path in specs:
         name = payload_name(spec_path)
-        if name in seen:
-            raise ValueError(
-                f"{seen[name]} and {spec_path} share the payload name {name}; rename one"
+        # Case-folded, not exact: ``Home.payload.json`` and
+        # ``home.payload.json`` are distinct files on ext4 but the same file
+        # on Windows and default macOS (review 2026-09-11). An exact-match
+        # guard let both specs write, the second silently replacing the
+        # first while the manifest reported two ok rows for one payload.
+        key = name.casefold()
+        if key in seen:
+            other = seen[key]
+            case_only = (
+                f" (case-only difference from {other.name}: a case-insensitive"
+                " filesystem would write one file)"
+                if other.name != spec_path.name
+                else ""
             )
-        seen[name] = spec_path
+            raise ValueError(
+                f"{other} and {spec_path} share the payload name {name}{case_only}; rename one"
+            )
+        seen[key] = spec_path
     # The exact bytes, hashed as read: the stamp names this file, not a
     # re-serialisation of it (review 2026-09-07 P2-7).
     discovery_bytes = Path(discovery_path).read_bytes()
@@ -314,6 +361,12 @@ def _compile_one(spec_path: Path, run: _Run) -> PageResult:
         return _failed(spec_path, "invalid YAML: " + " ".join(str(exc).split()))
     except ValueError as exc:  # DslError, TextError, a refused discovery document
         return _failed(spec_path, str(exc))
+    except OSError as exc:
+        # The spec cannot be read at all (permission, removed mid-run): a
+        # page failure that fails ALONE, exactly like unparseable YAML, so
+        # the other payloads and the manifest are still written. The row
+        # already names the file; the message adds the reason.
+        return _failed(spec_path, f"cannot read: {exc.strerror or exc}")
     payload = {
         "schema": PAYLOAD_SCHEMA,
         "sourcePage": f"(compiled from spec {spec_path.name})",
@@ -327,6 +380,7 @@ def _compile_one(spec_path: Path, run: _Run) -> PageResult:
             template=template_provenance(
                 run.template_vars.vars_path if run.template_vars else None,
                 run.template_vars.set_pairs if run.template_vars else None,
+                own_vars_path=page_vars_path(spec_path),
             ),
         ).as_dict(),
     }

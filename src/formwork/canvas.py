@@ -31,6 +31,32 @@ _CONTROL_OPEN = re.compile(r'<div data-sp-canvascontrol=""[^>]*>', re.DOTALL)
 _CONTROLDATA = re.compile(r'data-sp-controldata="([^"]*)"')
 _WEBPARTDATA = re.compile(r'data-sp-webpartdata="([^"]*)"')
 
+#: One ``data-sp-htmlproperties`` child whose text is a verbatim copy of a
+#: ``serverProcessedContent.searchablePlainTexts`` value. Measured on
+#: CollabHome.aspx (shauntestazure sandbox, 2026-09-05): a list title persists
+#: beside the webpartdata attribute as
+#: ``<div data-sp-prop-name="listTitle" data-sp-searchableplaintext="true">``.
+#: The mirrors SharePoint derives rather than copies — a ``links`` href is
+#: server-relative where the JSON value is absolute, and a ``links`` URL or a
+#: ``componentDependencies`` GUID is re-spelled into an attribute — do not
+#: match this shape and are never rewritten.
+_MIRROR_TEXT = re.compile(
+    r'(<div data-sp-prop-name="(?P<name>[^"]+)" data-sp-searchableplaintext="true">)'
+    r'(?P<text>[^<]*)</div>'
+)
+
+
+def _plain_texts(data: Any) -> dict[str, Any]:
+    """The ``serverProcessedContent.searchablePlainTexts`` mapping, or empty."""
+    if not isinstance(data, dict):
+        return {}
+    processed = data.get("serverProcessedContent")
+    if not isinstance(processed, dict):
+        return {}
+    texts = processed.get("searchablePlainTexts")
+    return texts if isinstance(texts, dict) else {}
+
+
 #: How SharePoint spells a colon inside canvas markup: in every attribute it
 #: escapes (below) and, measured 2026-09-06, in the inner HTML of a text
 #: control's ``data-sp-rte`` child on the item MERGE path
@@ -88,6 +114,11 @@ class Control:
     webpartdata_raw: str | None
     body: str = ""
     dirty: bool = field(default=False, repr=False)
+    # Mirror field names a render could not sync because the new value needs
+    # HTML escaping the mirror format cannot carry verbatim (review
+    # 2026-09-11 P2-2). Empty when every changed value was mirrored or the
+    # control has no mirror.
+    unsynced_mirrors: list[str] = field(default_factory=list, repr=False)
 
     @classmethod
     def web_part(cls, control_data: dict[str, Any], web_part_data: dict[str, Any]) -> "Control":
@@ -160,7 +191,49 @@ class Control:
             full = _WEBPARTDATA.sub(
                 lambda _m: f'data-sp-webpartdata="{webpartdata}"', full, count=1
             )
+            full = self._sync_mirrors(full)
         return full
+
+    def _sync_mirrors(self, full: str) -> str:
+        """Rewrite the plain-text ``data-sp-htmlproperties`` mirrors this render changed.
+
+        SharePoint keeps a web part's values twice: in the ``data-sp-webpartdata``
+        attribute, and in a ``data-sp-htmlproperties`` child that mirrors them for
+        the page model (measured on CollabHome.aspx, 2026-09-05). :meth:`render`
+        rewrites the attribute; the mirror is inner content and would otherwise
+        keep the value the control was parsed with, so a page rewritten for
+        another site carried the source site's list title and hrefs (raised as P2
+        by the 2026-09-06 P1-fix re-review and left unactioned). A mirror is
+        rewritten only when it provably carried the old value verbatim and the new
+        value needs no HTML escaping, so a mirror whose spelling SharePoint
+        derives rather than copies (the ``links`` hrefs) and the byte-exact render
+        of an unchanged dirty control are both left exactly as they were.
+        """
+        if self.webpartdata_raw is None:
+            return full
+        old_texts = _plain_texts(decode_attribute(self.webpartdata_raw))
+        changed = {
+            name: value
+            for name, value in _plain_texts(self.web_part_data).items()
+            if isinstance(value, str) and old_texts.get(name) != value
+        }
+        if not changed:
+            return full
+
+        def mirror(match: re.Match[str]) -> str:
+            value = changed.get(match.group("name"))
+            if value is None or match.group("text") != old_texts.get(match.group("name")):
+                return match.group(0)
+            if any(character in value for character in "&<>"):
+                # The mirror is plain text: writing this value verbatim would
+                # need escaping whose exact form SharePoint derives, not
+                # copies (review 2026-09-11 P2-2). Leaving it stale in
+                # silence is the defect #26 was filed for, so report it.
+                self.unsynced_mirrors.append(match.group("name"))
+                return match.group(0)
+            return f"{match.group(1)}{value}</div>"
+
+        return _MIRROR_TEXT.sub(mirror, full)
 
 
 @dataclass
