@@ -110,6 +110,35 @@ class TestProcess:
         assert "link and image values are report-only" in err
 
 
+class TestPathRefusals:
+    """A path argument that cannot be read or written is a refusal like any
+    other: one error line, exit 1, no traceback. main()'s rule (review
+    P3-6) applies to the primary inputs, the way load_vars already applies
+    it to a missing vars file (P2-1)."""
+
+    def test_a_missing_bundle_is_one_error_line(self, tmp_path, capsys):
+        rc = main(["inspect", str(tmp_path / "absent.json")])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.startswith("error: ")
+        assert "absent.json" in captured.err
+        assert captured.err.count("\n") == 1
+        assert "Traceback" not in captured.err
+
+    def test_out_into_a_directory_that_does_not_exist_is_one_error_line(
+        self, bundle_path, tmp_path, capsys
+    ):
+        out = tmp_path / "build" / "payload.json"
+        rc = main(["process", str(bundle_path), "--out", str(out)])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err.startswith("error: ")
+        assert "build" in captured.err
+        assert "Traceback" not in captured.err
+        assert not out.exists()
+
+
 class TestGenApply:
     def test_prints_apply_script_with_embedded_payload(
         self, bundle_path, tmp_path, capsys

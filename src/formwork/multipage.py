@@ -314,6 +314,12 @@ def _compile_one(spec_path: Path, run: _Run) -> PageResult:
         return _failed(spec_path, "invalid YAML: " + " ".join(str(exc).split()))
     except ValueError as exc:  # DslError, TextError, a refused discovery document
         return _failed(spec_path, str(exc))
+    except OSError as exc:
+        # The spec cannot be read at all (permission, removed mid-run): a
+        # page failure that fails ALONE, exactly like unparseable YAML, so
+        # the other payloads and the manifest are still written. The row
+        # already names the file; the message adds the reason.
+        return _failed(spec_path, f"cannot read: {exc.strerror or exc}")
     payload = {
         "schema": PAYLOAD_SCHEMA,
         "sourcePage": f"(compiled from spec {spec_path.name})",

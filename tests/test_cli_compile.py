@@ -107,3 +107,15 @@ sections:
         assert captured.err.count("\n") == 1
         assert "Traceback" not in captured.err
         assert not out.exists()
+
+    def test_a_missing_spec_file_is_one_error_line_not_a_traceback(self, tmp_path, capsys):
+        discovery_path = tmp_path / "discovery.json"
+        discovery_path.write_text(json.dumps(DISCOVERY), encoding="utf-8")
+        rc = main(["compile", str(tmp_path / "absent.yaml"), str(discovery_path)])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.startswith("error: ")
+        assert "absent.yaml" in captured.err
+        assert captured.err.count("\n") == 1
+        assert "Traceback" not in captured.err
