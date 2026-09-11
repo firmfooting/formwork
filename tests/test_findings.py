@@ -670,7 +670,11 @@ class TestPageStateVerdictDerivation:
                 label, "read.page.fields.FileName", None
             )
             if wanted and got:
-                return "kept" if got == wanted else f"ignored (stored {got})"
+                # The stored name is server-assigned and changes every run
+                # (an eight-character slug); the cell names the OUTCOME only,
+                # the name itself stays in the evidence. See the run-
+                # independence assertion below.
+                return "kept" if got == wanted else "ignored (server-assigned name)"
             return "no read"
 
         wanted_banner = samples["filename-explicit"]["requested"]["merge"][
@@ -729,11 +733,15 @@ class TestPageStateVerdictDerivation:
             assert finding is not None, check_id
             assert finding.result == cell, (check_id, finding.result, cell)
         # Run-independence (review 2026-09-07 P1-2): no "ok (page N)" id
-        # references and no tenant URLs in any cell.
+        # references, no tenant URLs and no server-assigned page FILE NAME
+        # in any cell. The file name is the residual the first pass missed:
+        # it changes on every create (the eight-character slug), so a cell
+        # quoting it reads DIFFERS on every re-run of a row that still holds.
         for check_id in expected:
             finding = registry.newest(check_id)
             assert not re.search(r"\(page \d+\)", finding.result), check_id
             assert "https://" not in finding.result, check_id
+            assert ".aspx" not in finding.result, check_id
 
 
 def flow_merge_status(samples):
