@@ -99,33 +99,59 @@ class TemplateProvenance:
 
     vars_name: str = ""
     vars_sha256: str = ""
+    own_vars_name: str = ""
+    own_vars_sha256: str = ""
     set_keys: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, str]:
         return {
             "varsFile": self.vars_name,
             "varsSha256": self.vars_sha256,
+            "ownVarsFile": self.own_vars_name,
+            "ownVarsSha256": self.own_vars_sha256,
             "setKeys": ",".join(self.set_keys),
         }
 
     @property
     def empty(self) -> bool:
-        return not (self.vars_name or self.vars_sha256 or self.set_keys)
+        return not (
+            self.vars_name
+            or self.vars_sha256
+            or self.own_vars_name
+            or self.own_vars_sha256
+            or self.set_keys
+        )
 
 
 def template_provenance(
     vars_path: Path | str | None,
     set_pairs: Sequence[str] | None,
+    own_vars_path: Path | str | None = None,
 ) -> TemplateProvenance:
     """The template-layer stamp: file name + sha256 of exact bytes, and the
-    sorted --set key names. Never values."""
+    sorted --set key names. Never values.
+
+    ``vars_path`` is the shared ``--vars`` file; ``own_vars_path`` is the
+    page's own ``vars:`` file (multipage.page_vars_path). Both are recorded:
+    the page file outranks the shared one at render time (precedence
+    ``--set`` > page file > ``--vars``), so a stamp naming only the shared
+    file would attribute the content to a file that did not produce it.
+    """
     keys = tuple(sorted({pair.partition("=")[0] for pair in (set_pairs or ())}))
+    own_name, own_sha256 = "", ""
+    if own_vars_path:
+        own_name = Path(own_vars_path).name
+        own_sha256 = hashlib.sha256(Path(own_vars_path).read_bytes()).hexdigest()
     if not vars_path:
-        return TemplateProvenance(set_keys=keys)
+        return TemplateProvenance(
+            own_vars_name=own_name, own_vars_sha256=own_sha256, set_keys=keys
+        )
     raw = Path(vars_path).read_bytes()
     return TemplateProvenance(
         vars_name=Path(vars_path).name,
         vars_sha256=hashlib.sha256(raw).hexdigest(),
+        own_vars_name=own_name,
+        own_vars_sha256=own_sha256,
         set_keys=keys,
     )
 
@@ -162,6 +188,8 @@ class PayloadStamp:
         if self.template is not None and not self.template.empty:
             t = self.template
             bits = [f" vars {t.vars_name or '-'} sha256 {t.vars_sha256[:12] or '-'}"]
+            if t.own_vars_name:
+                bits.append(f" own-vars {t.own_vars_name} sha256 {t.own_vars_sha256[:12]}")
             if t.set_keys:
                 bits.append(f" set[{','.join(t.set_keys)}]")
             line += ";" + "".join(bits)

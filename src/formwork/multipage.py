@@ -164,6 +164,35 @@ def payload_name(spec_path: Path) -> str:
     return f"{spec_path.stem}.payload.json"
 
 
+_VARS_KEY = re.compile(r"^vars:[ \t]*([^\n#]*?)[ \t]*(?:#.*)?$", re.MULTILINE)
+
+
+def page_vars_name(text: str, path: Path) -> str | None:
+    """The page-local ``vars:`` file a spec's ``text`` names, as written.
+
+    The one line-anchored discovery :func:`read_spec` uses (``re.match``
+    with ``(?m)`` never matched past line 1, review P1-5), refusing
+    ambiguity: more than one top-level ``vars:`` key is a spec error, not
+    a silent pick. Exposed so the payload stamp can record the same file
+    the page actually rendered from (M10 P2-5).
+    """
+    matches = _VARS_KEY.findall(text)
+    if len(matches) > 1:
+        raise DslError(f"{path.name}: more than one top-level 'vars:' key; keep one")
+    return matches[0].strip().strip("'\"") if matches else None
+
+
+def page_vars_path(path: Path) -> Path | None:
+    """The resolved page-local ``vars:`` file a spec names, or ``None``.
+
+    ``read_spec`` has already loaded and validated it by the time a stamp
+    is built, so a caller reaches this only for a spec that read cleanly.
+    """
+    path = Path(path)
+    own = page_vars_name(path.read_text(encoding="utf-8"), path)
+    return (path.parent / own).resolve() if own is not None else None
+
+
 def read_spec(
     path: Path,
     template_vars: TemplateVars | None = None,
@@ -199,15 +228,9 @@ def read_spec(
     text = Path(path).read_text(encoding="utf-8")
     # A page's own ``vars:`` key has to be findable BEFORE rendering — the
     # template text does not parse as YAML while {{ }} placeholders are in
-    # it. Line-anchored search (re.match + (?m) never matched past line 1,
-    # review P1-5), refusing ambiguity: more than one top-level vars key
-    # is a spec error, not a silent pick.
-    matches = re.findall(r"^vars:[ \t]*([^\n#]*?)[ \t]*(?:#.*)?$", text, re.MULTILINE)
-    if len(matches) > 1:
-        raise DslError(
-            f"{path.name}: more than one top-level 'vars:' key; keep one"
-        )
-    own = matches[0].strip().strip("'\"") if matches else None
+    # it. The discovery is shared with the payload stamp, which records the
+    # file this page renders from (:func:`page_vars_name`).
+    own = page_vars_name(text, path)
     variables: dict[str, Any] = dict(shared_vars or {})
     if own is not None:
         own_path = (path.parent / own).resolve()
@@ -348,6 +371,7 @@ def _compile_one(spec_path: Path, run: _Run) -> PageResult:
             template=template_provenance(
                 run.template_vars.vars_path if run.template_vars else None,
                 run.template_vars.set_pairs if run.template_vars else None,
+                own_vars_path=page_vars_path(spec_path),
             ),
         ).as_dict(),
     }

@@ -24,6 +24,7 @@ from formwork.provenance import (
     payload_stamp,
     process_stamp,
     provenance,
+    template_provenance,
 )
 from test_dsl import DISCOVERY, DISCOVERY_WITH_TEXT
 from test_multipage import HOME, write_discovery, write_specs
@@ -102,6 +103,26 @@ class TestThePayloadStamp:
             "spec",
             "compiledAt",
         ]
+
+    def test_the_template_stamp_records_the_page_own_vars_file(self, tmp_path):
+        # M10 P2-5: a page's own ``vars:`` file drives rendering, so the
+        # stamp must carry it -- a stamp naming only the shared --vars file
+        # attributes the content to a file that did not produce it.
+        own = tmp_path / "own.yaml"
+        own.write_bytes(b"env: page-local\n")
+        stamp = payload_stamp(
+            provenance(PRETTY, DATED),
+            "home.yaml",
+            "2026-09-07T01:02:03Z",
+            template=template_provenance(None, ["flag=1"], own_vars_path=own),
+        )
+        d = stamp.as_dict()
+        assert d["ownVarsFile"] == "own.yaml"
+        assert d["ownVarsSha256"] == hashlib.sha256(b"env: page-local\n").hexdigest()
+        assert d["varsFile"] == ""
+        assert d["setKeys"] == "flag"
+        # Values never echo, the vars file included.
+        assert "page-local" not in json.dumps(d)
 
     def test_the_clock_is_iso_utc_to_the_second(self):
         header = provenance(PRETTY, DATED)

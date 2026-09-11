@@ -29,7 +29,14 @@ from .generator import (
     generate_extract_script,
     generate_findprobe_script,
 )
-from .multipage import PageOptions, TemplateVars, compile_pages, find_specs, read_spec
+from .multipage import (
+    PageOptions,
+    TemplateVars,
+    compile_pages,
+    find_specs,
+    page_vars_path,
+    read_spec,
+)
 from .preview import build_preview, render_preview
 from .provenance import (
     PAYLOAD_KEY,
@@ -215,7 +222,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         provenance(discovery_bytes, discovery),
         Path(args.spec).name,
         template=template_provenance(
-            getattr(args, "vars", None), getattr(args, "set", None)
+            getattr(args, "vars", None),
+            getattr(args, "set", None),
+            own_vars_path=page_vars_path(Path(args.spec)),
         ),
     )
     payload = {
