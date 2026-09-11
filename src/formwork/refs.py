@@ -105,14 +105,26 @@ def _instance_id(control: Control) -> str:
 def _controls_by_instance(canvas: Canvas) -> dict[str, Control]:
     """Web-part controls keyed by instanceId, in canvas order.
 
-    Two controls with one instanceId cannot be told apart, so that canvas is
-    refused rather than resolved to whichever came first.
+    A control that cannot be addressed is refused, never skipped. Two controls
+    with one instanceId cannot be told apart, so that canvas is refused rather
+    than resolved to whichever came first; and a web-part control carrying no
+    address at all (neither a web-part ``instanceId`` nor a control-data
+    ``id``) is refused too. Skipping the latter silently is the worst of the
+    two: every site-bound value the control carries is then neither rewritten
+    nor reported as unresolved, so ``process`` declares the copy clean while
+    the emitted canvas still points at the source site.
     """
     by_id: dict[str, Control] = {}
     for control in canvas.web_part_controls():
         instance = _instance_id(control)
         if not instance:
-            continue
+            raise ValueError(
+                "canvas carries a web-part control with no address (its "
+                "web-part data has no instanceId and its control data no id), "
+                "so the site-bound values it carries cannot be rewritten or "
+                "reported. Re-extract the page, or restore the control's "
+                "instanceId."
+            )
         if instance in by_id:
             raise ValueError(
                 f"canvas carries two web-part controls with instanceId {instance!r}"
