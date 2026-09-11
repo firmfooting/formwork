@@ -265,6 +265,38 @@ class TestCompilePages:
             compile_pages([a / "home.yaml", b / "home.yaml"], discovery, tmp_path / "build")
         assert not (tmp_path / "build").exists()
 
+    def test_case_variant_stems_refuse_before_writing(self, tmp_path):
+        # Windows and default macOS filesystems are case-insensitive, so
+        # Home.payload.json and home.payload.json are ONE file there: a
+        # case-only difference is a collision too, and an exact-match guard
+        # let the second spec silently replace the first spec's payload
+        # while the manifest reported two ok rows (swarm review 2026-09-11).
+        discovery = write_discovery(tmp_path)
+        a = write_specs(tmp_path / "a", Home=HOME)
+        b = write_specs(tmp_path / "b", home=NEWS)
+        with pytest.raises(ValueError) as raised:
+            compile_pages(
+                [a / "pages" / "Home.yaml", b / "pages" / "home.yaml"],
+                discovery,
+                tmp_path / "build",
+            )
+        message = str(raised.value)
+        assert "share the payload name home.payload.json" in message
+        assert "case-only difference from Home.yaml" in message
+        assert not (tmp_path / "build").exists()
+
+    def test_case_variant_stems_in_one_glob_refuse_too(self, tmp_path):
+        # The same hole through the command's own discovery path: a glob
+        # spanning two directories whose stems differ only by case.
+        discovery = write_discovery(tmp_path)
+        write_specs(tmp_path / "a", Home=HOME)
+        write_specs(tmp_path / "b", home=NEWS)
+        specs = find_specs(str(tmp_path / "*" / "pages" / "*.yaml"))
+        assert [s.name for s in specs] == ["Home.yaml", "home.yaml"]
+        with pytest.raises(ValueError, match=r"share the payload name home\.payload\.json"):
+            compile_pages(specs, discovery, tmp_path / "build")
+        assert not (tmp_path / "build").exists()
+
     def test_the_manifest_records_stale_findings_per_page(self, tmp_path):
         discovery = write_discovery(tmp_path)
         pages = write_specs(tmp_path, home=HOME)

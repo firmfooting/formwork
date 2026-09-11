@@ -255,18 +255,33 @@ def compile_pages(
     """Compile every spec against the one discovery document into ``out_dir``.
 
     Refuses before writing anything when two specs would share a payload
-    name (same stem in different directories); otherwise every spec gets a
-    row, the failures alongside the successes.
+    name (same stem in different directories, ignoring case — Windows and
+    default macOS filesystems are case-insensitive, so two names that differ
+    only by case are ONE file there); otherwise every spec gets a row, the
+    failures alongside the successes.
     """
     specs = [Path(p) for p in spec_paths]
     seen: dict[str, Path] = {}
     for spec_path in specs:
         name = payload_name(spec_path)
-        if name in seen:
-            raise ValueError(
-                f"{seen[name]} and {spec_path} share the payload name {name}; rename one"
+        # Case-folded, not exact: ``Home.payload.json`` and
+        # ``home.payload.json`` are distinct files on ext4 but the same file
+        # on Windows and default macOS (review 2026-09-11). An exact-match
+        # guard let both specs write, the second silently replacing the
+        # first while the manifest reported two ok rows for one payload.
+        key = name.casefold()
+        if key in seen:
+            other = seen[key]
+            case_only = (
+                f" (case-only difference from {other.name}: a case-insensitive"
+                " filesystem would write one file)"
+                if other.name != spec_path.name
+                else ""
             )
-        seen[name] = spec_path
+            raise ValueError(
+                f"{other} and {spec_path} share the payload name {name}{case_only}; rename one"
+            )
+        seen[key] = spec_path
     # The exact bytes, hashed as read: the stamp names this file, not a
     # re-serialisation of it (review 2026-09-07 P2-7).
     discovery_bytes = Path(discovery_path).read_bytes()
