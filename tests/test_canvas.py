@@ -78,6 +78,54 @@ def test_dirty_control_reescapes_sharepoint_style():
     )
 
 
+def test_dirty_control_syncs_the_htmlproperties_mirror():
+    """The control's own copy of a rewritten value moves with it.
+
+    Control 3 carries ``listTitle`` twice: in the webpartdata attribute and in
+    the ``data-sp-htmlproperties`` child, which the fixture stores verbatim
+    from it. Rewriting only the attribute left the copy on the page (raised as
+    P2 by the 2026-09-06 P1-fix re-review, unactioned).
+    """
+    canvas = Canvas.parse(load_fixture())
+    target = canvas.controls[3]  # Document library
+    target.web_part_data["serverProcessedContent"]["searchablePlainTexts"][
+        "listTitle"
+    ] = "Reports library"
+    target.mark_dirty()
+
+    rendered = canvas.render()
+
+    mirror = 'data-sp-prop-name="listTitle" data-sp-searchableplaintext="true"'
+    assert f"{mirror}>Reports library</div>" in rendered
+    assert f"{mirror}>Documents</div>" not in rendered
+
+
+def test_mirror_sync_leaves_derived_mirrors_alone():
+    # Quick links: the part title is mirrored verbatim and follows the new
+    # value; the baseUrl mirror is an href SharePoint re-spells server-relative
+    # where the JSON value is absolute, so it is not the value to copy.
+    canvas = Canvas.parse(load_fixture())
+    target = canvas.controls[2]  # Quick links
+    processed = target.web_part_data["serverProcessedContent"]
+    processed["searchablePlainTexts"]["title"] = "Team links"
+    processed["links"]["baseUrl"] = "https://tgt.example/sites/New"
+    target.mark_dirty()
+
+    rendered = canvas.render()
+
+    mirror = 'data-sp-prop-name="title" data-sp-searchableplaintext="true"'
+    assert f"{mirror}>Team links</div>" in rendered
+    assert 'data-sp-prop-name="baseUrl" href="/sites/TestSampleTeam"' in rendered
+
+
+def test_dirtied_but_unchanged_control_still_renders_byte_exact():
+    # The module's headline contract: only real changes reach the bytes.
+    canvas = Canvas.parse(load_fixture())
+    for control in canvas.controls:
+        control.mark_dirty()
+    assert canvas.render() == load_fixture()
+
+
 def test_escape_attribute_matches_sharepoint_style():
     escaped = escape_attribute(json.dumps({"controlType": 3, "id": "a:b"}, separators=(",", ":")))
     assert escaped.startswith("&#123;&quot;controlType&quot;&#58;3")
