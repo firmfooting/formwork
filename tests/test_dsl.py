@@ -3,6 +3,7 @@
 import copy
 import html
 import json
+import pathlib
 import re
 
 import pytest
@@ -16,6 +17,11 @@ from formwork.dsl import (
     compile_page,
     stored_text_html,
 )
+
+#: Fixtures and repo root, anchored to this file rather than the process
+#: working directory, so the suite runs from anywhere (see ``_m5_doc``).
+ROOT = pathlib.Path(__file__).parent.parent
+M5_FIXTURE = ROOT / "tests" / "fixtures" / "discovery.m5.json"
 
 
 # A synthetic discovery document in the wire shape the discover script emits.
@@ -953,8 +959,10 @@ class TestBind:
 
 
 def _m5_doc() -> dict:
-    with open("tests/fixtures/discovery.m5.json", encoding="utf-8") as fh:
-        return json.load(fh)
+    # Anchored to this file, not the process working directory: the previous
+    # ``open("tests/fixtures/...")`` errored with FileNotFoundError for any
+    # invocation that did not happen to run from the repository root.
+    return json.loads(M5_FIXTURE.read_text(encoding="utf-8"))
 
 
 class TestBindAgainstMeasuredFixture:
