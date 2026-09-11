@@ -225,3 +225,16 @@ def test_preview_of_malicious_html_part_is_refused():
     }
     with pytest.raises(DslError):
         build_preview(spec, parse_discovery(DISCOVERY))
+
+
+@pytest.mark.parametrize("text", [
+    '<a href="javascript&#58;alert(1)">x</a>',
+    '<a href="java\nscript:alert(1)">x</a>',
+])
+def test_preview_refuses_a_url_the_browser_resolves(text):
+    """The text part's HTML reaches the preview's one ``| safe`` sink, so a
+    value the browser resolves to javascript: must refuse here, not render
+    (2026-09-11: the entity/newline spellings reached the document)."""
+    spec = {"page": "Evil", "sections": [{"type": "one", "parts": [{"text": text}]}]}
+    with pytest.raises(DslError, match="not supported"):
+        build_preview(spec, parse_discovery(DISCOVERY))
