@@ -65,6 +65,13 @@ _REFUSED: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+#: The URL-scheme refusal, on its own so :func:`_refuse_resolved_url` can
+#: re-check the one rule a browser can be made to satisfy while the source
+#: does not: a character reference in an attribute VALUE is decoded before
+#: the URL is resolved, and the URL parser removes tab and newline anywhere
+#: in it.
+_URL_SCHEME_REFUSED = re.compile(r"(?:href|src)\s*=\s*[\"']?\s*(?:javascript|data|vbscript):", re.I)
+
 #: Raw elements and constructs refused in an HTML part, matched per line,
 #: case-insensitively (HTML tag and attribute names are case-insensitive):
 #: raw-text elements (whose close would swallow the canvas wrapper's),
@@ -77,9 +84,14 @@ _HTML_REFUSED: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"<!--"), "HTML comments are not supported"),
     (re.compile(r"\son[a-z]+\s*=", re.I),
      "inline event handlers (on...) are not supported"),
-    (re.compile(r"(?:href|src)\s*=\s*[\"']?\s*(?:javascript|data|vbscript):", re.I),
-     "javascript:, data: and vbscript: urls are not supported"),
+    (_URL_SCHEME_REFUSED, "javascript:, data: and vbscript: urls are not supported"),
 )
+
+#: What the browser removes from a URL before resolving it: ASCII tab and
+#: newline are dropped anywhere in the URL, so ``href="java\tscript:x"`` and
+#: ``href="java\nscript:x"`` are both the ``javascript:`` URL.
+_URL_STRIPPED = str.maketrans("", "", "\t\n\r")
+
 
 #: Control characters that must never reach the canvas or the preview.
 _REFUSED_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -118,6 +130,7 @@ def _checked_html(source: str) -> str:
         for pattern, reason in _HTML_REFUSED:
             if pattern.search(line):
                 raise TextError(f"line {offset}: {reason}")
+    _refuse_resolved_url(body)
     if "data-sp-" in body.lower():
         raise TextError("HTML must not carry data-sp- attributes: the canvas wrapper owns them")
     if body.count("<div") != body.count("</div>"):
@@ -125,6 +138,45 @@ def _checked_html(source: str) -> str:
     if not body:
         raise TextError("text is empty")
     return body
+
+
+def _refuse_resolved_url(body: str) -> None:
+    """Refuse an href/src the line scan reads as safe but a browser resolves
+    to a script-capable URL.
+
+    An HTML parser decodes character references inside an attribute VALUE
+    before the value is resolved — ``href="javascript&#58;alert(1)"`` and
+    ``href="jav&#x61;script:alert(1)"`` are the ``javascript:`` URL — and the
+    URL parser removes ASCII tab and newline anywhere in the URL, so
+    ``href="java\\nscript:alert(1)"`` is too. The raw line scan sees none of
+    these. Only the scheme rule is re-checked against the decoded, tab- and
+    newline-stripped copy: an attribute NAME and text content are never
+    decoded, so an escaped ``&lt;script&gt;`` is text and must stay legal.
+    """
+    folded = html.unescape(body).translate(_URL_STRIPPED)
+    match = _URL_SCHEME_REFUSED.search(folded)
+    if match is not None:
+        line = _line_of(body, match.start())
+        raise TextError(
+            f"line {line}: javascript:, data: and vbscript: urls are not"
+            " supported (the browser decodes a character reference, or drops"
+            " an embedded tab or newline, before it resolves the url)"
+        )
+
+
+def _line_of(source: str, folded_index: int) -> int:
+    """The 1-based line of the ``folded_index``-th character of ``source``
+    once its tab, newline and carriage return characters are removed."""
+    line = 1
+    seen = 0
+    for char in source:
+        if char == "\n":
+            line += 1
+        elif char not in "\t\r":
+            if seen == folded_index:
+                return line
+            seen += 1
+    return line
 
 
 def _blocks(source: str) -> list[tuple[int, list[str]]]:
