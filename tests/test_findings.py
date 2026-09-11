@@ -338,6 +338,41 @@ class TestReliances:
             "page.layout.factors-4-8": ["section 3"],
         }
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<p style="color:red;">styled</p>',
+            '<p STYLE="color:red;">styled</p>',
+            '<p style = "color:red;">styled</p>',
+            '<span CLASS="rte">styled</span>',
+            "<MARK>styled</MARK>",
+        ],
+    )
+    def test_styled_text_html_is_detected_however_it_is_spelled(self, body):
+        # HTML tag and attribute names are case-insensitive and '=' may carry
+        # spaces around it (text.py:_HTML_REFUSED, 2026-09-06), and an HTML
+        # part is passed through as written. So a part whose stored HTML
+        # carries an inline style, a class or a <mark> in any spelling relies
+        # on page.text.styled-html; missing the reliance lets a stale (or
+        # absent) row go unwarned.
+        registry = load_findings(FINDINGS)
+        spec = {"page": "P", "sections": [{"parts": [{"text": body}]}]}
+        ids = {r.check_id for r in reliances(spec, parse_discovery(DISCOVERY), registry)}
+        assert "page.text.styled-html" in ids, body
+
+    def test_an_uppercase_styled_part_warns_on_a_stale_styled_row(self):
+        # End to end: with page.text.styled-html stale, the part above must
+        # make compile's warning fire, exactly as the lowercase spelling does.
+        registry = registry_dated(MEASURED - dt.timedelta(days=100))
+        spec = {
+            "page": "P",
+            "sections": [{"parts": [{"text": '<p STYLE="color:red;">x</p>'}]}],
+        }
+        stale = stale_findings(
+            spec, parse_discovery(DISCOVERY), registry, max_age_days=90, today=MEASURED
+        )
+        assert "page.text.styled-html" in {s.check_id for s in stale}
+
     def test_properties_on_a_part_without_its_own_row_rely_on_the_newest_properties_row(self):
         registry = load_findings(FINDINGS)
         spec = {
