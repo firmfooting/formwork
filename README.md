@@ -501,14 +501,41 @@ Two commands read it.
   DIFFERS row is the cue to re-measure, fold the capture into the fixtures
   and add a dated row; the old row stays.
 
+## Install
+
+Releases are published as wheels on this repository's GitHub Releases page
+(there is no PyPI publication — do not `pip install formwork` from PyPI; the
+name is not ours there). Install a release wheel directly:
+
+```
+pipx install https://github.com/firmfooting/formwork/releases/latest/download/formwork-0.6.0-py3-none-any.whl
+```
+
+(pinning the URL to a known release is safer than `latest`; bump the version
+as releases land.) Or with pip, into whatever environment you manage:
+
+```
+pip install <the same wheel URL>
+```
+
+Both give you the `formwork` command: `compile`, `compile-pages`, `preview`,
+`process`, `inspect`, `components`, and the `gen` paste-in generators. One
+caveat: `formwork gen findprobe` reads the findings registry from
+`FINDINGS.md` in the working directory, so it only runs from a formwork
+repository checkout — everything else runs anywhere.
+
 ## Development
 
 ```
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
-.venv/bin/ruff check .
-.venv/bin/mypy src
+uv sync
+uv run pytest
+uv run ruff check .
+uv run mypy src
 ```
+
+`uv sync --locked` is what CI runs; relock with `uv lock` whenever you touch
+`pyproject.toml`, or CI's `--locked` check fails the PR. (A plain venv +
+`pip install -e '.[dev]'` also works locally, but uv is what the gates run.)
 
 The paste-ins and the preview are Jinja templates under
 `src/formwork/templates/` (`jinja2` is the one runtime dependency besides

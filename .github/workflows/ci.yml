@@ -5,56 +5,75 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
   test:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: "3.11"
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Which interpreter is under test (evidence, not the job name)
+        run: uv run --no-sync python -VV
       - name: Install
-        run: pip install -e '.[dev]'
+        run: uv sync --locked
       - name: Pytest
-        run: pytest -q
+        run: uv run --no-sync pytest -q
 
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: "3.11"
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Install
-        run: pip install -e '.[dev]'
+        run: uv sync --locked
       - name: Ruff
-        run: ruff check .
+        run: uv run --no-sync ruff check .
       - name: Mypy
-        run: mypy src
+        run: uv run --no-sync mypy src
 
   node-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Install
-        run: pip install -e .
-      - name: Generated scripts are valid JS
+        run: uv sync --locked
+      - name: All five generated scripts are valid JS (review 2026-09-08 P2-4)
         run: |
-          python -c "
-          from formwork.generator import generate_extract_script, generate_apply_script
+          uv run --no-sync python -c "
+          from formwork.generator import generate_extract_script, generate_discover_script, generate_apply_script, generate_findprobe_script
+          from formwork.findings import load_findings
           from pathlib import Path
-          import subprocess, sys, json
-          scripts = [generate_extract_script(), generate_apply_script()]
-          scripts.append(generate_apply_script(page_name='X', canvas_payload=json.dumps({'canvas': '<div></div>', 'title': 'X'})))
+          import subprocess, json
+          scripts = [
+              generate_extract_script(),
+              generate_discover_script(),
+              generate_apply_script(),
+              generate_apply_script(page_name='X', canvas_payload=json.dumps({'canvas': '<div></div>', 'title': 'X'})),
+              generate_findprobe_script(load_findings(Path('FINDINGS.md'))),
+          ]
           for i, s in enumerate(scripts):
               p = Path(f'/tmp/fw-generated-{i}.js'); p.write_text(s, encoding='utf-8')
               subprocess.run(['node', '--check', str(p)], check=True)

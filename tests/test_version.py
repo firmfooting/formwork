@@ -22,7 +22,13 @@ def test_package_version_matches_pyproject():
 
 
 def test_changelog_leads_with_the_current_version():
+    """The current version must have the newest release heading — after an
+    optional Unreleased section, which collects merged-but-unbumped work
+    (M11 convention; 0.7.0 will be the first bump after the sentinel)."""
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     headings = [line for line in changelog.splitlines() if line.startswith("## ")]
     assert headings, "CHANGELOG.md has no release headings"
+    if headings[0].startswith("## Unreleased"):
+        headings = headings[1:]
+    assert headings, "CHANGELOG.md has only an Unreleased heading"
     assert headings[0].startswith(f"## {formwork.__version__} ")

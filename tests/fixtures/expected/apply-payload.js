@@ -1,4 +1,4 @@
-// formwork apply v0.6.0 — run from any page of the TARGET site.
+// formwork apply v__FORMWORK_VERSION__ — run from any page of the TARGET site.
 // Checks the payload's provenance stamp against this web, creates the page,
 // writes the embedded canvas via REST, verifies.
 //
@@ -7,7 +7,7 @@
 // and URL, spec name, timestamps. Before anything is created this script reads
 // the current web and REFUSES when its id or URL differs from the stamp's, or
 // when the payload was compiled by a formwork newer than this script's own
-// v0.6.0. To apply a payload on a web other than the one it was
+// v__FORMWORK_VERSION__. To apply a payload on a web other than the one it was
 // compiled against, edit FORCE_SITE_MISMATCH below to true; the difference is
 // still printed. Nothing overrides the version check: a newer compile may rely
 // on a measurement this script does not carry.
@@ -195,7 +195,7 @@
   const PAGE_NAME = "Bob's <page>";
   const PAYLOAD = JSON.parse("{\"title\": \"Bob's <page>\", \"canvas\": \"<div>{\\\"k\\\": 1} \\\\ </script> \\u00fc</div>\", \"provenance\": {\"formwork\": \"0.5.0\", \"discoverySha256\": \"931ef951f66f5f610dcd6ce06bb3eea0a57770fd30c5dbe89df8d80b4cb94e1d\", \"discoveryWebId\": \"20c3b672-36ff-4738-9518-192017e92eea\", \"discoveryWebUrl\": \"https://shauntestazure.sharepoint.com/sites/TestSampleTeam\", \"discoveredAt\": \"2026-09-06T22:15:54.234Z\", \"spec\": \"home.yaml\", \"compiledAt\": \"2026-09-07T00:00:00Z\"}}");
   const PROMOTED_STATE = 1;
-  const FORMWORK_VERSION = "0.6.0";
+  const FORMWORK_VERSION = "__FORMWORK_VERSION__";
   // The one operator switch, documented in the header: true applies this
   // payload on a web whose id or URL differs from the stamp's. It never
   // covers the version check.
