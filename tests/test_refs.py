@@ -202,6 +202,27 @@ class TestScan:
         with pytest.raises(ValueError, match="two web-part controls with instanceId"):
             scan_canvas(Canvas.parse(doubled))
 
+    def test_a_web_part_control_with_no_address_is_refused_not_skipped(self):
+        # A hand-edited bundle: an editor blanks a control's instanceId and its
+        # control data carries no id either. That control is still a web-part
+        # control (its data is there, site-bound values and all) but nothing
+        # can address it. Skipping it silently left the Document library's
+        # list id/url/view unrewritten AND absent from ``plan.unresolved``, so
+        # process reported a clean copy while the canvas still pointed at the
+        # source site. It must be refused instead.
+        block = blocks(CANVAS)[DOC_LIBRARY]
+        assert block.count(DOC_LIBRARY) == 2  # the control-data id and the instanceId
+        stripped = block.replace(DOC_LIBRARY, "")
+        # The site-bound values are untouched: only the address went.
+        assert "/sites/TestSampleTeam/Shared Documents" in stripped
+        canvas = Canvas.parse(CANVAS.replace(block, stripped, 1))
+        assert len(canvas.web_part_controls()) == 4  # still a web-part control
+        with pytest.raises(ValueError, match="web-part control with no address"):
+            scan_canvas(canvas)
+        # apply refuses it too: a plan cannot name a control with no address.
+        with pytest.raises(ValueError, match="web-part control with no address"):
+            apply_plan_to_canvas(canvas, Plan())
+
 
 class TestPlan:
     def test_unresolved_values_are_reported_not_dropped(self):
