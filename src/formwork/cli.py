@@ -492,6 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     except (DslError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # A path that cannot be read or written is a refusal too: a mistyped
+        # spec, bundle, discovery, mapping or payload file, a --out whose
+        # directory does not exist, a permission. load_vars already answers a
+        # missing vars file this way (P2-1); the primary inputs answer the
+        # same, with Python's own wording, which names the path and the
+        # reason.
+        where = f": {exc.filename}" if exc.filename else ""
+        print(f"error: {exc.strerror or exc}{where}", file=sys.stderr)
+        return 1
     return result
 
 
