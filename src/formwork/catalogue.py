@@ -2,10 +2,13 @@
 
 ``GetClientSideWebParts`` (measured 2026-09-06, shauntestazure sandbox) returns
 every placeable client-side component with an embedded ``Manifest`` JSON
-string: alias, title, component type, hidden flag, and preconfigured entries
-whose first entry supplies default properties. The catalogue is the authority
-the page DSL compiles against — nothing is placed that the live site did not
-declare placeable.
+string: alias, title, component type, hidden flag, and preconfigured entries.
+A component's ``title`` and ``default_properties`` are its *first* entry's —
+what the alias names — and :meth:`Component.as_entry` reads any later
+entry's own pair, the web part picker's other variants (the live
+ListWebPart's second entry is ``"Document library"``). The catalogue is the
+authority the page DSL compiles against — nothing is placed that the live
+site did not declare placeable.
 
 The discover script also places two text controls (``controlType`` 4, not
 web parts) with known HTML and reads back what SharePoint persisted. They
@@ -44,7 +47,7 @@ is the same constant the compiler places by.
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -69,6 +72,28 @@ class Component:
 
     def entry_count(self) -> int:
         return len(self.entry_titles)
+
+    def as_entry(self, title: str) -> "Component":
+        """This component as the preconfigured entry titled ``title``.
+
+        ``title`` and ``default_properties`` are the *first* entry's (the
+        component's own, what the alias names). A later entry carries its
+        own pair: the live catalogue's ListWebPart declares ``"List"`` and
+        ``"Document library"`` (``tests/fixtures/discovery.m5.json``), and
+        the M5 probe placed the second one by index and SharePoint stored it
+        as ``title: "Document library"`` with ``isDocumentLibrary: true``
+        (``listBindings.persisted[0]``). A title this component does not
+        carry returns the component unchanged.
+        """
+        if title in self.entry_titles:
+            index = self.entry_titles.index(title)
+            if index < len(self.entry_properties):
+                return replace(
+                    self,
+                    title=title,
+                    default_properties=dict(self.entry_properties[index]),
+                )
+        return self
 
 
 @dataclass(frozen=True)
@@ -404,7 +429,18 @@ class Catalogue:
         raise KeyError(f"component alias not in catalogue: {alias!r}")
 
     def by_title(self, title: str) -> Component:
+        """A component by its own title, or by any preconfigured entry's.
+
+        A manifest's entries are the web part picker's variants and each
+        carries its own title and defaults, so a spec naming the title the
+        picker showed — the live ListWebPart's second entry, ``"Document
+        library"`` — resolves to that entry with its measured defaults
+        (:meth:`Component.as_entry`). A title more than one component
+        carries is refused, as before.
+        """
         matches = [c for c in self.components if c.title == title]
+        if not matches:
+            matches = [c for c in self.components if title in c.entry_titles]
         if not matches:
             raise KeyError(f"component title not in catalogue: {title!r}")
         if len(matches) > 1:
@@ -412,7 +448,7 @@ class Catalogue:
                 f"component title {title!r} is ambiguous across "
                 f"{len(matches)} components; use the alias instead"
             )
-        return matches[0]
+        return matches[0].as_entry(title)
 
 
 def parse_discovery(discovery: dict[str, Any]) -> Catalogue:
