@@ -158,8 +158,21 @@ class TestTheGuardIsInTheScript:
         web = script.index('API("web?$select=Id,ServerRelativeUrl")')
         create = script.index("await createSitePage(")
         assert read < web < create
-        # Every refusal is a throw with nothing created, and says so.
-        assert script.count("Nothing was created.") == 3
+        # Every refusal is a throw with nothing created, and says so: no stamp,
+        # newer formwork, site mismatch, and a stamp naming neither a discovery
+        # nor a bundle (the fail-closed shape check).
+        assert script.count("Nothing was created.") == 4
+
+    def test_the_site_check_is_keyed_on_the_stamp_shape_not_one_field_type(self):
+        """The site check must run for every stamp compile writes, whatever
+        type one field happens to have: keying it on
+        ``typeof STAMP.discoveryWebId === "string"`` skipped it in silence for a
+        compile stamp that had lost that field (see the node tests below)."""
+        script = generate_apply_script()
+        # The old gate (the whole site check hung on one field's type) is gone.
+        assert 'if (typeof STAMP.discoveryWebId === "string") {' not in script
+        assert "const isCompileStamp = COMPILE_MARKERS.some(" in script
+        assert 'const COMPILE_MARKERS = ["discoverySha256", "discoveryWebId",' in script
 
     def test_the_switch_and_the_version_constant_are_declared_and_documented(self):
         script = generate_apply_script()
@@ -267,6 +280,60 @@ class TestTheGuardUnderNode:
             assert "carries no stamp (PAYLOAD.provenance)" in run["errors"][0]
             assert "Nothing was created." in run["errors"][0]
             assert run["calls"] == []
+
+    def test_a_compile_stamp_that_lost_a_web_value_is_refused_not_applied(self, tmp_path):
+        """FAIL-CLOSED REGRESSION. The site check used to be gated on
+        ``typeof STAMP.discoveryWebId === "string"``: a compile stamp that had
+        lost that one field fell into the process branch, the guard printed
+        "no discovery binding (process payload): site check not applicable" (for
+        a stamp still carrying discoverySha256, spec and compiledAt) and the
+        payload was created on a web it was never compiled for. Every compile
+        stamp must now be checked, whatever type that field has."""
+        drop_id = {k: v for k, v in APPLY_PAYLOAD_STAMP.items() if k != "discoveryWebId"}
+        drop_url = {k: v for k, v in APPLY_PAYLOAD_STAMP.items() if k != "discoveryWebUrl"}
+        stamps = {
+            "missing web id": drop_id,
+            "null web id": {**APPLY_PAYLOAD_STAMP, "discoveryWebId": None},
+            "numeric web id": {**APPLY_PAYLOAD_STAMP, "discoveryWebId": 12345},
+            "missing web url": drop_url,
+        }
+        for label, stamp in stamps.items():
+            run = run_apply(
+                tmp_path, generate_apply_script("P", payload(stamp=stamp)), web_id=OTHER_WEB_ID
+            )
+            assert len(run["errors"]) == 1, label
+            err = run["errors"][0]
+            assert err.startswith("[formwork] apply failed: provenance mismatch: "), label
+            # Still recognised as a compile stamp: the refusal names its sha256.
+            assert APPLY_PAYLOAD_STAMP["discoverySha256"] in err, label
+            assert "Nothing was created." in err, label
+            assert creates(run) == [], label
+            # The misleading skip line must not be printed for a compile stamp.
+            assert run["logs"] == [], label
+
+    def test_force_covers_a_missing_web_value_and_prints_the_difference(self, tmp_path):
+        drop_id = {k: v for k, v in APPLY_PAYLOAD_STAMP.items() if k != "discoveryWebId"}
+        script = forced(generate_apply_script("P", payload(stamp=drop_id)))
+        run = run_apply(tmp_path, script, web_id=OTHER_WEB_ID)
+        assert run["errors"] == []
+        assert len(creates(run)) == 1
+        assert run["warns"] == [
+            "[formwork] FORCE_SITE_MISMATCH: applying despite web id: the stamp carries none"
+        ]
+
+    def test_a_stamp_naming_neither_a_discovery_nor_a_bundle_is_refused(self, tmp_path):
+        """The process stamp is the ONLY shape that may skip the site check: a
+        stamp that names no discovery field at all and no bundle binds the
+        payload to nothing, so it is refused rather than applied unbound."""
+        run = run_apply(
+            tmp_path,
+            generate_apply_script("P", payload(stamp={"formwork": formwork.__version__})),
+            web_id=OTHER_WEB_ID,
+        )
+        assert len(run["errors"]) == 1
+        assert "names neither a discovery document nor a bundle" in run["errors"][0]
+        assert "Nothing was created." in run["errors"][0]
+        assert creates(run) == []
 
     def test_force_site_mismatch_applies_anyway_and_prints_the_difference(self, tmp_path):
         script = forced(generate_apply_script("P", payload()))
