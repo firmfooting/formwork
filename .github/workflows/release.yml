@@ -150,8 +150,11 @@ jobs:
         with:
           name: dist
           path: dist/
-      # v1.12.4 is what the pending PyPI registration reports; pinned to that
-      # release so what PyPI shows and what runs are the same code.
-      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+      # v1.14.2, the same release dbml-sharepoint publishes with. The
+      # pending PyPI registration's "v1.12.4" is only the version snapshot
+      # at registration time, not a requirement — v1.12.4 carries a known
+      # GHSA (zizmor's known-vulnerable-actions audit rejects it), v1.14.2
+      # is the patched line. Trusted publishing is version-agnostic.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://upload.pypi.org/legacy/
