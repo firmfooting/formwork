@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "formwork"
-version = "0.6.0"
+name = "formwork-sp"
+dynamic = ["version"]
 description = "Declarative SharePoint modern pages: declare, compile, preview, apply; and copy."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,15 @@ dev = ["pytest>=8.0", "mypy>=1.10", "ruff>=0.5", "types-PyYAML"]
 
 [project.scripts]
 formwork = "formwork.cli:main"
+
+[tool.setuptools.dynamic]
+# The version lives ONCE, in src/formwork/__init__.py, and release-please
+# updates that literal (x-release-please-version marker). A static
+# [project].version here would make every release bump stale uv.lock —
+# uv lock records the root package's static version — and main's
+# `uv sync --locked` gate would fail on the release PR's merge commit.
+# A dynamic version is invisible to the resolver, so the lock never moves.
+version = { attr = "formwork.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

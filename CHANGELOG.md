@@ -2,10 +2,11 @@
 
 Dates are the dates of the commits on `main`. Every SharePoint behaviour named
 here was measured on the shauntestazure sandbox on the date given; the
-evidence lives under `tests/fixtures/`. Releases are the version literal in
-`pyproject.toml` and `src/formwork/__init__.py`; a version tag `v<version>`
-triggers the release workflow, which builds the wheel + sdist and attaches
-them to a GitHub release.
+evidence lives under `tests/fixtures/`. The version lives once, in
+`src/formwork/__init__.py` (`pyproject.toml` reads it dynamically); the
+release-please workflow maintains the release PR, and merging it tags
+`v<version>`, builds the wheel + sdist, attaches them to a GitHub release,
+and publishes to PyPI as `formwork-sp`.
 
 ## Unreleased
 
@@ -14,6 +15,15 @@ spec-template layer, folded with the 2026-09-08 adversarial reviews (Opus),
 plus the 2026-09-11 swarm review (15 findings, issues #12-#26) folded with
 the 2026-09-11 integration review (Opus). No version bump yet; the next bump
 (0.7.0) will be the first to enjoy the golden version sentinel.
+
+- Distribution: the package publishes to PyPI as `formwork-sp` (`formwork`
+  was taken; the import package and CLI command stay `formwork`), cut by
+  release-please and published by OIDC trusted publishing in `release.yml`
+  (the filename is load-bearing — the PyPI pending publisher is bound to
+  it). The version literal moved to `src/formwork/__init__.py` alone —
+  pyproject reads it via `tool.setuptools.dynamic` — because a static
+  `[project].version` would stale `uv.lock` on every bump and fail the
+  `uv sync --locked` gate on the release merge.
 
 - CI tests against Python 3.11, 3.12 and 3.13 on both Ubuntu and Windows —
   each leg logs `python -VV` so the interpreter under test is evidence, not
