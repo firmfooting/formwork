@@ -108,12 +108,15 @@ jobs:
           enable-cache: false # release artifacts are never built from a cache
       # The version the wheel claims must be the version the tag names.
       # release-please already asserts this at PR time; assert it again at
-      # build time so a skipped or partially-applied PR cannot ship.
+      # build time so a skipped or partially-applied PR cannot ship. The
+      # literal is PARSED, not imported: a checkout of the tag has no
+      # project installed, so `import formwork` under --no-sync finds
+      # nothing (that exact mistake failed the first 0.7.0 build).
       - name: The tag must match the version being released
         if: needs.release-please.outputs.release_created == 'true'
         run: |
-          version="$(uv run --no-sync python -c 'import formwork; print(formwork.__version__)')"
-          echo "pyproject version: $version; tag: ${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' src/formwork/__init__.py)"
+          echo "__init__ version: $version; tag: ${GITHUB_REF_NAME}"
           test "${GITHUB_REF_NAME}" = "v${version}"
       - name: Run the test suite
         run: |
@@ -145,11 +148,22 @@ jobs:
       url: https://pypi.org/project/formwork-sp/
     permissions:
       id-token: write # OIDC trusted publishing; no API token anywhere
+      contents: write # attach the artifacts to the GitHub release
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
+      # release-please's release carries notes, not artifacts. The wheels
+      # belong on the release page too (the README points installers there).
+      # Env-indirected so the tag never lands in the script text.
+      - name: Attach the artifacts to the GitHub release
+        if: needs.release-please.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "${TAG_NAME}" dist/* --clobber
       # v1.14.2, the same release dbml-sharepoint publishes with. The
       # pending PyPI registration's "v1.12.4" is only the version snapshot
       # at registration time, not a requirement — v1.12.4 carries a known
