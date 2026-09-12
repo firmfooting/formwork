@@ -555,20 +555,19 @@ Two commands read it.
 
 ## Install
 
-Releases are published as wheels on this repository's GitHub Releases page
-(there is no PyPI publication — do not `pip install formwork` from PyPI; the
-name is not ours there). Install a release wheel directly:
+The package publishes to PyPI as `formwork-sp` (`formwork` was taken there;
+the import package and the `formwork` command are unchanged). Releases are
+cut by release-please: conventional commits on `main` maintain a release PR,
+and merging it tags the version, attaches the wheel + sdist to a GitHub
+release, and publishes to PyPI by trusted publishing. Install from PyPI:
 
 ```
-pipx install https://github.com/firmfooting/formwork/releases/latest/download/formwork-0.6.0-py3-none-any.whl
+pipx install formwork-sp
 ```
 
-(pinning the URL to a known release is safer than `latest`; bump the version
-as releases land.) Or with pip, into whatever environment you manage:
-
-```
-pip install <the same wheel URL>
-```
+or `pip install formwork-sp`. Release wheels also land on this repository's
+GitHub Releases page if you would rather pin a URL (pinning to a known
+release is safer than `latest`; bump the version as releases land).
 
 Both give you the `formwork` command: `compile`, `compile-pages`, `preview`,
 `process`, `inspect`, `components`, and the `gen` paste-in generators. One

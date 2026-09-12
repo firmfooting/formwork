@@ -1,66 +1,126 @@
-name: Release
-
-# M11: on a version tag, run the test suite, then build the wheel + sdist
-# and attach them to a GitHub release. Actions are SHA-pinned (house rule);
-# permissions are contents:read for building and contents:write only on the
-# one job that publishes the release.
+# Release management + PyPI publication in one workflow. The filename is
+# load-bearing: the PyPI pending trusted publisher for formwork-sp is bound
+# to THIS file (release.yml) and the `pypi` environment, so the publish job
+# must live here and the environment name must match exactly.
 #
-# Review 2026-09-08 fixes: the build job gates on the suite (a tag on a
-# broken main cannot release), asserts the tag matches pyproject's version
-# (v0.7.0 must carry formwork-0.7.0), pins the build toolchain (the
-# published artifact's provenance should not float), and the release job
-# passes GH_REPO explicitly (it has no checkout, so gh has no other way to
-# know the repository).
+# Flow: conventional commits land on main -> release-please maintains a
+# release PR (version bump + CHANGELOG) -> merging it makes release-please
+# (in that same push's run) create the vX.Y.Z tag + GitHub release and set
+# release_created=true -> the build and publish jobs run in the SAME run.
+#
+# release-please authenticates as the firmfooting-bot GitHub App (org secrets
+# RELEASE_APP_CLIENT_ID / RELEASE_APP_PRIVATE_KEY, visibility: all) rather
+# than as GITHUB_TOKEN. A pull request opened with the default token
+# triggers no workflows, so a release PR would report no checks at all and
+# sit BLOCKED against any required ones with nothing able to clear them —
+# dbml-sharepoint's 0.5.0 waited eight days that way. An installation token
+# is a real actor: ci.yml and zizmor.yml run on the release PR like any
+# other, and the flow keeps working if main ever gains required checks.
+#
+# The build and publish jobs run in the same run as the merge that cuts the
+# release: an app-created release CAN trigger an on:release workflow, but
+# the trusted-publisher binding above keeps publish here regardless, and
+# one run is easier to follow than two.
+#
+# The version lives ONCE, in src/formwork/__init__.py (the
+# x-release-please-version annotation). pyproject.toml reads it via
+# tool.setuptools.dynamic. A static [project].version would make every bump
+# stale uv.lock (the lock records the root package's version) and fail the
+# `uv sync --locked` gate on the merge commit.
+#
+# Distribution name note: PyPI projects cannot be renamed and `formwork` was
+# taken, so the package publishes as formwork-sp. The import package
+# (formwork), the CLI command (formwork) and the wheel's module layout are
+# unchanged; only the distribution name differs. The publish job's
+# repository-url pins the target so a future name decision cannot silently
+# publish elsewhere.
+name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  test:
+  release-please:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    # Nothing is taken from GITHUB_TOKEN. The app token minted below does
+    # every write, and being a different actor is the whole point.
+    permissions: {}
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: false
-      - name: Install
-        run: uv sync --locked
-      - name: The tag must match the version being released
+      # Fail closed before release-please runs. A missing secret would
+      # otherwise surface as an opaque token-exchange error inside the
+      # action; either way the recovery is to set the org secret.
+      - name: Require the release app secrets
+        env:
+          APP_CLIENT_ID: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          version="$(uv run --no-sync python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
-          echo "pyproject version: $version; tag: ${GITHUB_REF_NAME}"
-          test "${GITHUB_REF_NAME}" = "v${version}"
-      - name: Pytest
-        run: uv run --no-sync pytest -q
+          set -euo pipefail
+          if [ -z "${APP_CLIENT_ID}" ]; then
+            echo "RELEASE_APP_CLIENT_ID is not set; refusing to release." >&2
+            exit 1
+          fi
+          if [ -z "${APP_PRIVATE_KEY}" ]; then
+            echo "RELEASE_APP_PRIVATE_KEY is not set; refusing to release." >&2
+            exit 1
+          fi
+
+      # Short-lived, scoped to this repository's installation, masked in the
+      # log and revoked when the job ends. Same action, same SHA as
+      # dbml-sharepoint's publish job — one app-token pattern to review.
+      - name: Mint an installation token for this repository
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   build:
-    needs: test
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      # Build the tagged tree when release-please cut a release (it holds the
+      # bumped version), not whatever main has drifted to since.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.ref }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          enable-cache: false
-      # The build frontend is NOT a project dependency, and this job never
-      # runs `uv sync`, so it must be injected into the run environment
-      # explicitly. `--with` supplies it (pinned, so the artifact's
-      # provenance does not float); `uv tool install` alone only put a
-      # `pyproject-build` binary on PATH that nothing ever invoked.
-      - name: Build wheel and sdist with the pinned build frontend
-        run: uv run --locked --no-sync --with "build==1.6.1" python -m build
-        env:
-          UV_NO_CACHE: "1"
+          enable-cache: false # release artifacts are never built from a cache
+      # The version the wheel claims must be the version the tag names.
+      # release-please already asserts this at PR time; assert it again at
+      # build time so a skipped or partially-applied PR cannot ship.
+      - name: The tag must match the version being released
+        if: needs.release-please.outputs.release_created == 'true'
+        run: |
+          version="$(uv run --no-sync python -c 'import formwork; print(formwork.__version__)')"
+          echo "pyproject version: $version; tag: ${GITHUB_REF_NAME}"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      - name: Run the test suite
+        run: |
+          uv sync --locked
+          uv run --no-sync pytest -q
+      - name: Build the wheel and sdist
+        run: uv build
       - name: The wheel must ship every template (a wheel without them renders nothing)
         run: |
           expected="$(ls src/formwork/templates/*.j2 | wc -l)"
@@ -71,19 +131,27 @@ jobs:
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
 
-  release:
-    needs: build
+  publish:
+    needs: [release-please, build]
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # The PyPI pending trusted publisher names this environment. Repository
+    # environments are a security boundary: it has a custom branch policy
+    # (main only), so a workflow from any other ref cannot publish.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/formwork-sp/
     permissions:
-      contents: write
+      id-token: write # OIDC trusted publishing; no API token anywhere
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
-      - name: Create the GitHub release with the built artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
+      # v1.12.4 is what the pending PyPI registration reports; pinned to that
+      # release so what PyPI shows and what runs are the same code.
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          repository-url: https://upload.pypi.org/legacy/
