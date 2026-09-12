@@ -108,6 +108,47 @@ the 2026-09-11 integration review (Opus). No version bump yet; the next bump
 - README documents the M10 templating surface and corrects the provenance
   field list (swarm #18, P2).
 
+## [0.7.0](https://github.com/firmfooting/formwork/compare/v0.6.0...v0.7.0) (2026-09-12)
+
+
+### Features
+
+* because the user-facing change is pip install formwork-sp — this ([5152ded](https://github.com/firmfooting/formwork/commit/5152ded2c75ebb3904668463a9d48e0489132b95))
+* **distribution:** M11 — wheel releases, 3.12/3.13 matrix, golden version sentinel ([020de82](https://github.com/firmfooting/formwork/commit/020de827ce07539ddae114c15038c6d1501c34b0))
+* **distribution:** PyPI publication as formwork-sp, cut by release-please ([#28](https://github.com/firmfooting/formwork/issues/28)) ([5152ded](https://github.com/firmfooting/formwork/commit/5152ded2c75ebb3904668463a9d48e0489132b95))
+* M10 — page specs as Jinja templates over a vars file ([79828ef](https://github.com/firmfooting/formwork/commit/79828ef137f209d582afb43c12b767fcacc68f18))
+* M11 — distribution, gate breadth, golden version sentinel ([ffeaa2c](https://github.com/firmfooting/formwork/commit/ffeaa2c7a929f95c7923042116e2c32b6d1013d1))
+* **templates:** M10 — page specs as Jinja templates over a vars file ([a392224](https://github.com/firmfooting/formwork/commit/a3922247d440ebefab8a34350a11cd4caf32627f))
+
+
+### Bug Fixes
+
+* **canvas:** sync the htmlproperties mirror a dirty render rewrites ([88281e4](https://github.com/firmfooting/formwork/commit/88281e41b3308b253f07eb699d4a9e5e810da9e4))
+* **catalogue:** resolve a title from any preconfigured entry, not just the first ([90c599a](https://github.com/firmfooting/formwork/commit/90c599a1624d007fd885786bc55788a1ab698b77))
+* **ci,release:** build job never obtained the build frontend — no tag could publish ([07f97ff](https://github.com/firmfooting/formwork/commit/07f97ff327f662ef5570393d8f01793fe1db9386))
+* **ci,release:** M11 review — real matrix, gated release, honest README, delimited sentinel fold ([6f2e410](https://github.com/firmfooting/formwork/commit/6f2e4103e4dc803783771c4df5a4aad7bfa4c6ca))
+* **ci:** accept release-please's linked changelog heading form ([#30](https://github.com/firmfooting/formwork/issues/30)) ([25b3418](https://github.com/firmfooting/formwork/commit/25b341871c2b1c3c0e05b83f4efb55c42970bc3b))
+* **ci:** argparse invalid-choice message quoting changed in 3.12+ — assert either form ([fcb4472](https://github.com/firmfooting/formwork/commit/fcb4472723625dda039d2aec48963c63118921ff))
+* **cli:** a path that cannot be read or written is a refusal, not a traceback ([640af31](https://github.com/firmfooting/formwork/commit/640af319311da4c822a9879aa7c5aeb2b07e4050))
+* **compiler:** refuse an href/src a browser resolves to a script url ([d78d462](https://github.com/firmfooting/formwork/commit/d78d46241729b7156856b6a7609dbf31d51b8ddb))
+* **compiler:** refuse non-finite floats and non-string displayTitle reaching the canvas ([dc83c12](https://github.com/firmfooting/formwork/commit/dc83c12c7550775fcaa972ee53e561868b7de011))
+* **findings:** detect styled text HTML in any attribute spelling ([09e29fa](https://github.com/firmfooting/formwork/commit/09e29fa58655ae1975c54abaeb90d464c392ac56))
+* **multipage:** refuse case-only payload-name collisions ([61d2072](https://github.com/firmfooting/formwork/commit/61d20723a8fd8c2498ee1d4e01a5edf2996e51fb))
+* **provenance:** stamp a page own vars file, not just shared --vars ([cbab495](https://github.com/firmfooting/formwork/commit/cbab495baa3256eac41b43503e5506fc1f469358))
+* **refs:** refuse a web-part control with no address instead of skipping it ([6298ee9](https://github.com/firmfooting/formwork/commit/6298ee98ac68a0d9bfc15c7987c4c4d58faa5a84))
+* swarm integration review — merge [#16](https://github.com/firmfooting/formwork/issues/16)'s fix, report stale mirrors, honest YAML position, changelog ([984ade7](https://github.com/firmfooting/formwork/commit/984ade79de5635c0066bf0920de631577b139f16))
+* swarm review — 14 verified findings, one per area ([ed0afb9](https://github.com/firmfooting/formwork/commit/ed0afb9121a379990512c15f47842fdd083a86ee))
+* **templates:** apply guard fails closed on a compile stamp missing a web value ([a5e13a8](https://github.com/firmfooting/formwork/commit/a5e13a8ab8b1442555ca697d7ac8e4a44aa32d97))
+* **templates:** M10 review — intent-keyed rendering, one read path, no escaped values, audited stamps ([12d8361](https://github.com/firmfooting/formwork/commit/12d83617e7de60f8cbcbb32f49f2f09586e86c42))
+* **templates:** make the filename-slug findprobe verdict run-independent ([7d9bfd7](https://github.com/firmfooting/formwork/commit/7d9bfd7b75bfa51ce58d0fdbcc0259df5d6e1241))
+* **templating:** a rendered spec that breaks YAML echoed the value; report position only ([2e87196](https://github.com/firmfooting/formwork/commit/2e8719669f89c281afe0197a0cd71724fdc8e7c4))
+
+
+### Documentation
+
+* document the M10 spec-template layer (--vars/--set, page vars:, template provenance) ([6f67142](https://github.com/firmfooting/formwork/commit/6f6714233e9e80ba8a16804bc6c049b2ddc0fb7b))
+* **plan:** ledger — M10 built and review-folded (PR [#10](https://github.com/firmfooting/formwork/issues/10)) ([560dc6d](https://github.com/firmfooting/formwork/commit/560dc6d7088d41a5df77a61986f8a360730f4973))
+
 ## 0.6.0 — 2026-09-07
 
 Section model and single serialiser (M9-as-built), consolidation only:
